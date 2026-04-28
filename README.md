@@ -109,6 +109,19 @@ deploy/             init.sql (Postgres)
 
 - [x] P0 Excel → LLM 字段映射 → BOM 表格 + G6 图 → 导出
 - [x] P2 Agent 操控 G6（add/del/style/move）
-- [ ] P1 STEP 解析 + 3D 视图联动
-- [ ] P3 多租户 + 订阅计费
+- [x] P1 STEP / IGES 解析（不再用 three.js，零件结构复杂时影响性能）
+- [ ] **Layer 1 补完**：SKU 智能映射 / 客户历史沉淀 / 风险预警 / ECO 影响分析
+- [ ] **Layer 2 skill**：比价 / PDF 报价单解析 / 采购单生成 / SW 旁路助手
+- [ ] P3 多租户 + 订阅计费（验证 PMF 后再做）
 - [ ] P4 Admin 管理后台
+
+## 战略与决策文档
+
+项目演进过程中的战略思考与关键决策记录在 `docs/`：
+
+- [00-原始商业规划.md](docs/00-原始商业规划.md) — 最初的商业规划全文
+- [01-初步问题分析.md](docs/01-初步问题分析.md) — 反向尽调与 D1-D6 决策项
+- [02-数据获取策略.md](docs/02-数据获取策略.md) — 米思米/震坤行 API 拒绝后的备选路径
+- [03-产品架构与下一步.md](docs/03-产品架构与下一步.md) — 四层架构、PEBS_BOM 现状定位、立即行动清单
+- [04-SKU智能映射设计.md](docs/04-SKU智能映射设计.md) — Layer 1 第一个补齐项的设计说明
+- [conversations/](docs/conversations/) — 关键讨论的原始对话记录

@@ -39,3 +39,6 @@ apps/api/data/
 *.xlsx
 !**/test*.xlsx
 !**/sample*.xlsx
+
+# Claude Code 内部状态
+.claude/worktrees/
