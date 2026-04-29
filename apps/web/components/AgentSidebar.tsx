@@ -1,7 +1,9 @@
 'use client'
 import { useEffect, useState } from 'react'
-import type { BOMNode, BrandRecommendation } from '@/lib/api'
-import { chatStream, recommendBrands } from '@/lib/api'
+import type { BOMNode, BrandRecommendation, ModelOption } from '@/lib/api'
+import { chatStream, listModels, recommendBrands } from '@/lib/api'
+
+const MODEL_STORAGE_KEY = 'agent.model'
 
 // Brand recommendations strip — shows up to ~5 brands, badged by trust
 // (★★ private / ★ shared-by-you / · community). Falls back to the
@@ -305,6 +307,37 @@ export default function AgentSidebar({
   // agent is still working (fixes "no feedback" complaint).
   const [phase, setPhase] = useState<string>('')
 
+  // Model picker — fetched from /agent/models on mount, persisted in
+  // localStorage so user's choice survives reloads. The default is whatever
+  // the backend says (settings.llm_model).
+  const [models, setModels] = useState<ModelOption[]>([])
+  const [selectedModel, setSelectedModel] = useState<string | null>(null)
+  useEffect(() => {
+    const ctrl = new AbortController()
+    listModels(ctrl.signal)
+      .then((r) => {
+        setModels(r.models)
+        // Restore saved choice if it's still in the registry, else fall back
+        // to backend default.
+        let saved: string | null = null
+        try { saved = localStorage.getItem(MODEL_STORAGE_KEY) } catch { /* ignore */ }
+        const savedValid = saved && r.models.some((m) => m.id === saved)
+        setSelectedModel(savedValid ? saved : r.default)
+      })
+      .catch((ex) => {
+        if (ex?.name !== 'AbortError') {
+          // eslint-disable-next-line no-console
+          console.warn('[AgentSidebar] listModels failed', ex)
+        }
+      })
+    return () => ctrl.abort()
+  }, [])
+  useEffect(() => {
+    if (selectedModel) {
+      try { localStorage.setItem(MODEL_STORAGE_KEY, selectedModel) } catch { /* ignore */ }
+    }
+  }, [selectedModel])
+
   async function send() {
     const text = input.trim()
     if (!text || busy) return
@@ -328,7 +361,7 @@ export default function AgentSidebar({
       })
 
     try {
-      for await (const evt of chatStream(bomId, text, history)) {
+      for await (const evt of chatStream(bomId, text, history, selectedModel)) {
         if (evt.type === 'delta') {
           // First text token means the model is producing the reply.
           setPhase('回复生成中…')
@@ -371,6 +404,45 @@ export default function AgentSidebar({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {/* Model picker — sits above the busy bar so it's always visible.
+          Disabled while a request is in flight so users don't switch models
+          mid-stream and confuse history. */}
+      {models.length >= 1 && (
+        <div
+          style={{
+            padding: '6px 12px',
+            borderBottom: '1px solid #e5e7eb',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            fontSize: 12,
+            color: '#374151',
+            background: '#fafafa',
+          }}
+        >
+          <span style={{ color: '#6b7280' }}>模型</span>
+          <select
+            value={selectedModel || ''}
+            onChange={(e) => setSelectedModel(e.target.value || null)}
+            disabled={busy}
+            style={{
+              flex: 1,
+              padding: '3px 6px',
+              border: '1px solid #d0d7de',
+              borderRadius: 4,
+              fontSize: 12,
+              background: '#fff',
+              cursor: busy ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {models.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       {busy && (
         <div
           style={{

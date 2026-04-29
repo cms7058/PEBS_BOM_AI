@@ -29,11 +29,19 @@ from app.agent_tools import TOOLS, BOMToolExecutor
 from app.config import settings
 from app.db import get_db
 from app.llm.base import ChatMessage, StreamOptions
-from app.llm.registry import get_provider
+from app.llm.registry import get_provider_for_model, list_models
 from app.models.bom import BOM
 from app.schemas import AgentChatRequest
 
 router = APIRouter(prefix="/agent", tags=["agent"])
+
+
+@router.get("/models")
+async def models() -> dict[str, Any]:
+    """List the LLM models the user can pick from in the chat sidebar.
+    Filters out entries whose API key isn't configured so the UI never
+    surfaces a model that 500s on first use."""
+    return {"models": list_models(), "default": settings.llm_model}
 
 
 SYSTEM_PROMPT_TEMPLATE = """你是 BOM 编辑助手，帮用户查看和编辑一个 BOM（物料清单）结构。
@@ -217,7 +225,13 @@ async def chat(req: AgentChatRequest, db: AsyncSession = Depends(get_db)):
     if not bom:
         raise HTTPException(404, "BOM not found")
 
-    provider = get_provider()
+    # Resolve model + provider from the request (or fall back to default).
+    # Returning a clear error here is better than letting an unknown model
+    # explode 6 layers down inside the SDK.
+    try:
+        provider, real_model_name = get_provider_for_model(req.model)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
     user_name = (req.user_name or "").strip() or "agent"
     executor = BOMToolExecutor(db=db, bom_id=req.bom_id, user_name=user_name)
 
@@ -247,7 +261,7 @@ async def chat(req: AgentChatRequest, db: AsyncSession = Depends(get_db)):
             )
 
             options = StreamOptions(
-                model=settings.llm_model,
+                model=real_model_name,
                 messages=messages,
                 system_prompt=sys_prompt,
                 max_tokens=settings.llm_max_tokens,

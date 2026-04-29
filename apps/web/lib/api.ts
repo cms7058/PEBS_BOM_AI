@@ -108,6 +108,28 @@ export async function recommendBrands(
   return res.json()
 }
 
+// ─── Models (chat sidebar picker) ────────────────────────────────────────
+
+export interface ModelOption {
+  id: string
+  label: string
+  provider: string
+}
+
+export interface ModelsResult {
+  models: ModelOption[]
+  default: string
+}
+
+export async function listModels(signal?: AbortSignal): Promise<ModelsResult> {
+  const res = await fetch(`${API_BASE}/agent/models`, {
+    cache: 'no-store',
+    signal,
+  })
+  if (!res.ok) throw new Error(`agent/models failed: ${res.status}`)
+  return res.json()
+}
+
 // ─── Component categories (non-std taxonomy) ─────────────────────────────
 
 export interface ParameterDef {
@@ -284,6 +306,7 @@ export async function* chatStream(
   bomId: string,
   message: string,
   history: { role: string; content: string }[] = [],
+  model?: string | null,
 ): AsyncGenerator<AgentEvent> {
   const res = await fetch(`${API_BASE}/agent/chat`, {
     method: 'POST',
@@ -293,6 +316,7 @@ export async function* chatStream(
       message,
       history,
       user_name: getUserName(),
+      ...(model ? { model } : {}),
     }),
   })
   if (!res.ok || !res.body) throw new Error(`Chat failed: ${res.status}`)

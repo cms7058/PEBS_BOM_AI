@@ -15,14 +15,22 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # LLM
+    # LLM — default provider used when a chat request omits the `model` field.
     llm_provider: str = "minimaxPlan"
     llm_model: str = "MiniMax-M2.7"
     llm_temperature: float = 0.3
     llm_max_tokens: int = 8192
 
+    # MiniMax Plan (Anthropic-compatible endpoint)
     minimax_plan_api_key: str = ""
     minimax_plan_base_url: str = "https://api.minimaxi.com/anthropic"
+
+    # DeepSeek (OpenAI-compatible endpoint)
+    # Real model id is whatever DeepSeek currently exposes — set via env var
+    # if the default below stops matching their published name.
+    deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-v4-pro"
 
     # Database — SQLite by default for native dev. Override via env for Postgres.
     database_url: str = "sqlite+aiosqlite:///./data/app.db"

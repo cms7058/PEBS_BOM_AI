@@ -69,3 +69,7 @@ class AgentChatRequest(BaseModel):
     message: str
     history: list[dict[str, Any]] = Field(default_factory=list)
     user_name: str | None = None
+    # Optional model override. Frontend's model picker passes id like
+    # "MiniMax-M2.7" or "deepseek-v4-pro"; backend looks it up in the
+    # MODEL_REGISTRY. Falls back to settings.llm_model if absent or unknown.
+    model: str | None = None
