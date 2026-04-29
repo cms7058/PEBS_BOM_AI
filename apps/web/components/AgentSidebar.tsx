@@ -402,6 +402,7 @@ export default function AgentSidebar({
             <br />• "我们直线导轨用雅威达，国产中端，账期 30 天"
             <br />• "推荐几个滚珠丝杠的品牌"
             <br />• "我录过哪些品牌？"
+            <br />• 直接粘贴 AVL 表格（多行）→ 自动批量入库
           </p>
         )}
         {msgs.map((m, i) => (

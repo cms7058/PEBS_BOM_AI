@@ -363,6 +363,46 @@ TOOLS: list[ToolDef] = [
         },
     ),
     ToolDef(
+        name="brand_bulk_add",
+        description=(
+            "**批量录入** 一组品牌到私有 KB。用户粘贴 AVL 表格 / Excel 选区到 chat 时调用。\n"
+            "你的工作：从用户粘贴的内容里抽取行，每行解析成一个 brand 字典（同 brand_add 的字段）。"
+            "类目要映射到 component_categories.id（如『直线导轨』→ 'linear_guide'）。"
+            "不能映射的类目就在 categories 留空数组，agent 在回复里告诉用户哪些行未挂类目。\n"
+            "返回 {inserted, merged, rejected, errors} 统计。"
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["rows"],
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "description": "品牌列表，每项字段同 brand_add",
+                    "items": {
+                        "type": "object",
+                        "required": ["name"],
+                        "properties": {
+                            "name": {"type": "string"},
+                            "aliases": {"type": "array", "items": {"type": "string"}},
+                            "categories": {"type": "array", "items": {"type": "string"}},
+                            "url": {"type": ["string", "null"]},
+                            "region": {"type": ["string", "null"]},
+                            "price_tier": {"type": ["string", "null"]},
+                            "typical_lead_time": {"type": ["string", "null"]},
+                            "notes": {"type": ["string", "null"]},
+                        },
+                    },
+                },
+                "visibility": {
+                    "type": "string",
+                    "enum": ["private", "shared"],
+                    "default": "private",
+                    "description": "对全部 rows 生效；不允许逐行不同。",
+                },
+            },
+        },
+    ),
+    ToolDef(
         name="brand_list",
         description=(
             "列出当前租户私有知识库里所有品牌。可按 category_id 过滤。"
@@ -1238,6 +1278,105 @@ class BOMToolExecutor:
             summary=f"已录入品牌『{name}』到{('社区共享' if entry.visibility=='shared' else '私有')}知识库",
             data={"id": entry.id},
             mutated=True,
+        )
+
+    async def _t_brand_bulk_add(self, args: dict[str, Any]) -> ToolResult:
+        tenant = current_tenant()
+        rows = args.get("rows") or []
+        if not isinstance(rows, list) or not rows:
+            return ToolResult(ok=False, summary="rows 不能为空")
+        visibility = args.get("visibility") or "private"
+        if visibility not in ("private", "shared"):
+            return ToolResult(ok=False, summary=f"非法 visibility: {visibility}")
+
+        # Pre-load valid category ids once so per-row validation is cheap.
+        all_cat_ids = set(
+            (
+                await self.db.execute(select(ComponentCategory.id))
+            ).scalars().all()
+        )
+        # Pre-load existing brands for this tenant for dedup-by-name.
+        existing_by_name: dict[str, BrandEntry] = {
+            b.name: b
+            for b in (
+                await self.db.execute(
+                    select(BrandEntry).where(BrandEntry.tenant_id == tenant)
+                )
+            ).scalars().all()
+        }
+
+        inserted: list[str] = []
+        merged: list[str] = []
+        rejected: list[dict] = []  # {row_index, name, reason}
+
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                rejected.append({"row_index": i, "name": None, "reason": "非对象"})
+                continue
+            name = (row.get("name") or "").strip()
+            if not name:
+                rejected.append({"row_index": i, "name": None, "reason": "缺少 name"})
+                continue
+            cats = row.get("categories") or []
+            if cats:
+                bad = [c for c in cats if c not in all_cat_ids]
+                if bad:
+                    rejected.append({
+                        "row_index": i,
+                        "name": name,
+                        "reason": f"未知类目: {bad}",
+                    })
+                    continue
+
+            existing = existing_by_name.get(name)
+            if existing is not None:
+                # Merge into existing — prefer non-empty new values, don't
+                # nuke fields user didn't include in this batch.
+                for k in (
+                    "aliases", "url", "region", "categories",
+                    "price_tier", "typical_lead_time", "notes",
+                ):
+                    v = row.get(k)
+                    if v is not None and v != [] and v != "":
+                        setattr(existing, k, v)
+                # visibility from batch arg always wins
+                existing.visibility = visibility
+                merged.append(name)
+                continue
+
+            entry = BrandEntry(
+                tenant_id=tenant,
+                name=name,
+                aliases=row.get("aliases") or [],
+                url=row.get("url"),
+                region=row.get("region"),
+                categories=cats,
+                price_tier=row.get("price_tier"),
+                typical_lead_time=row.get("typical_lead_time"),
+                notes=row.get("notes"),
+                source="chat",
+                visibility=visibility,
+                created_by=self.user_name,
+            )
+            self.db.add(entry)
+            existing_by_name[name] = entry  # so duplicates within same batch dedup
+            inserted.append(name)
+
+        await self.db.commit()
+        return ToolResult(
+            ok=True,
+            summary=(
+                f"批量入库: 新增 {len(inserted)} / 合并 {len(merged)} / 拒绝 {len(rejected)}"
+                + (
+                    f"。被拒原因示例: {rejected[0]['reason']}" if rejected else ""
+                )
+            ),
+            data={
+                "inserted": inserted,
+                "merged": merged,
+                "rejected": rejected,
+            },
+            mutated=bool(inserted or merged),
         )
 
     async def _t_brand_list(self, args: dict[str, Any]) -> ToolResult:
