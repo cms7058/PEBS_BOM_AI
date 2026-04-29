@@ -43,7 +43,17 @@ class MiniMaxPlanProvider(ILLMProvider):
     def __init__(self, api_key: str, base_url: str = "https://api.minimaxi.com/anthropic"):
         if not api_key:
             raise ValueError("MINIMAX_PLAN_API_KEY is required")
-        self._client = AsyncAnthropic(api_key=api_key, base_url=base_url)
+        # MiniMax-M2.7 emits chain-of-thought before the final answer; for
+        # multi-row reasoning tasks (e.g. parsing a pasted AVL table into
+        # brand_bulk_add) the thinking phase alone can exceed the SDK's
+        # default 60s read timeout. Bump to 5 minutes — well past the
+        # observed worst-case while still bounded enough that hung requests
+        # surface.
+        self._client = AsyncAnthropic(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=300.0,
+        )
 
     async def stream(self, options: StreamOptions) -> AsyncIterator[StreamEvent]:
         # Token Plan docs: temperature must be in (0, 1]. Clamp defensively.
@@ -85,14 +95,21 @@ class MiniMaxPlanProvider(ILLMProvider):
                     elif et == "content_block_delta":
                         delta = event.delta
                         dt = getattr(delta, "type", None)
-                        # MiniMax-M2.7 also emits `thinking_delta` blocks (chain-of-thought);
-                        # forward only final-answer text and tool-use input deltas.
                         if dt == "text_delta":
                             yield StreamEvent(type="text_delta", delta=delta.text)
                         elif dt == "input_json_delta":
                             buf = tool_buffers.get(event.index)
                             if buf is not None:
                                 buf["json"] += delta.partial_json
+                        elif dt == "thinking_delta":
+                            # MiniMax-M2.7 chain-of-thought. Forward as a
+                            # heartbeat so the UI sees motion during long
+                            # reasoning. The text content itself is a
+                            # rolling preview; route handles aggregation.
+                            yield StreamEvent(
+                                type="thinking_delta",
+                                delta=getattr(delta, "thinking", "") or "",
+                            )
 
                     elif et == "content_block_stop":
                         buf = tool_buffers.pop(event.index, None)

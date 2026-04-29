@@ -265,10 +265,29 @@ async def chat(req: AgentChatRequest, db: AsyncSession = Depends(get_db)):
             stop_reason: str | None = None
             errored = False
 
+            # Used to throttle thinking-phase updates — bursting thinking_delta
+            # to the SSE stream every few ms is wasteful; once per ~500 chars
+            # is enough for the UI heartbeat.
+            thinking_buffer = ""
+            last_phase_emit = 0
             async for evt in provider.stream(options):
                 if evt.type == "text_delta" and evt.delta:
                     accumulated_text += evt.delta
                     yield {"event": "delta", "data": json.dumps({"text": evt.delta})}
+                elif evt.type == "thinking_delta" and evt.delta:
+                    thinking_buffer += evt.delta
+                    # Emit phase update every 500 chars or so. Trim to last
+                    # 80 chars so it stays one-line readable.
+                    if len(thinking_buffer) - last_phase_emit >= 500:
+                        last_phase_emit = len(thinking_buffer)
+                        preview = thinking_buffer[-80:].replace("\n", " ")
+                        yield {
+                            "event": "status",
+                            "data": json.dumps(
+                                {"phase": f"思考中…{preview}"},
+                                ensure_ascii=False,
+                            ),
+                        }
                 elif evt.type == "tool_use":
                     pending_tool_uses.append(
                         {"id": evt.id, "name": evt.name, "input": evt.input or {}}
@@ -354,4 +373,6 @@ async def chat(req: AgentChatRequest, db: AsyncSession = Depends(get_db)):
             "data": json.dumps({"reason": "max_tool_rounds"}),
         }
 
-    return EventSourceResponse(event_source())
+    # ping every 15s keeps proxies (and the user's browser fetch reader)
+    # from killing the connection during long thinking phases on big prompts.
+    return EventSourceResponse(event_source(), ping=15)

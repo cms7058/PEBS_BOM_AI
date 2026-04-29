@@ -7,7 +7,11 @@ from typing import Any, AsyncIterator, Literal, Protocol
 @dataclass
 class StreamEvent:
     type: Literal[
-        "text_delta", "tool_use_start", "tool_use", "stop", "error"
+        "text_delta", "tool_use_start", "tool_use",
+        "thinking_delta",  # MiniMax/Claude chain-of-thought; surfaces as
+                           # 'phase' updates so UI shows progress on long
+                           # reasoning tasks (e.g. parsing pasted AVL tables)
+        "stop", "error"
     ]
     delta: str | None = None
     id: str | None = None
