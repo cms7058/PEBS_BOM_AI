@@ -3,6 +3,7 @@ from app.models.bom import (
     BOMNode,
     BOMNodeEdit,
     Base,
+    BrandEntry,
     ComponentCategory,
     UploadedFile,
 )
@@ -12,6 +13,7 @@ __all__ = [
     "BOM",
     "BOMNode",
     "BOMNodeEdit",
+    "BrandEntry",
     "ComponentCategory",
     "UploadedFile",
 ]

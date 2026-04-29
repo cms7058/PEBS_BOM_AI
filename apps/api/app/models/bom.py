@@ -1,7 +1,17 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -162,4 +172,71 @@ class ComponentCategory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class BrandEntry(Base):
+    """Per-tenant supplier brand knowledge — the layer that turns generic
+    LLM brand recommendations into tenant-specific AVL-aware suggestions.
+
+    Tenancy: every row has tenant_id. Queries MUST filter by it. We never
+    surface a tenant's brands to a different tenant unless the row's
+    visibility is 'shared'.
+
+    Sources of entries:
+      - "chat":  user told the agent "我们用 X 牌"
+      - "file":  imported from an Excel/CSV AVL upload (TODO)
+      - "url":   scraped from a brand homepage user pasted (gated, TODO)
+      - "system": curated baseline shipped with the product
+
+    Recommendation order at query time:
+      1. tenant's own private entries  (visibility='private', highest trust)
+      2. tenant's own shared entries   (visibility='shared')
+      3. other tenants' shared entries (community pool)
+      4. LLM's general knowledge fallback (handled in agent prompt, not DB)
+    """
+
+    __tablename__ = "brand_entries"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+
+    # The pivot. Every query filters by this. NEVER nullable.
+    tenant_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
+
+    # Display name as user would write it ("HIWIN 上银").
+    name: Mapped[str] = mapped_column(String(128))
+    # Other ways this brand might be referenced — used for fuzzy match.
+    aliases: Mapped[list] = mapped_column(JSON, default=list)
+    # Optional homepage / catalogue URL.
+    url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    region: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # List of component_categories.id this brand makes products for.
+    categories: Mapped[list] = mapped_column(JSON, default=list)
+
+    # Free-form business attributes; intentionally string-typed so they can
+    # carry whatever vocabulary a customer uses ("高端"/"高"/"premium").
+    price_tier: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    typical_lead_time: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Provenance + governance
+    source: Mapped[str] = mapped_column(String(16), default="chat")
+    source_ref: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    visibility: Mapped[str] = mapped_column(String(16), default="private")
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    upvotes: Mapped[int] = mapped_column(Integer, default=0)
+    flagged: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    __table_args__ = (
+        # Most queries hit (tenant_id, name) for dedup checks.
+        Index("ix_brand_entries_tenant_name", "tenant_id", "name"),
+        # Recommendation queries scan by (tenant_id, visibility).
+        Index("ix_brand_entries_tenant_visibility", "tenant_id", "visibility"),
     )

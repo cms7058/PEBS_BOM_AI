@@ -18,8 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.llm.base import ToolDef
-from app.models.bom import BOM, BOMNode, ComponentCategory
+from app.models.bom import BOM, BOMNode, BrandEntry, ComponentCategory
 from app.services.component_classifier import classify as heuristic_classify
+from app.tenancy import current_tenant
 from app.services.audit import (
     FIELD_CATEGORY,
     FIELD_CREATE,
@@ -321,6 +322,113 @@ TOOLS: list[ToolDef] = [
                     "default": False,
                     "description": "true 时连已分类的节点也重新评估"
                 },
+            },
+        },
+    ),
+    ToolDef(
+        name="brand_add",
+        description=(
+            "把一个供应商品牌录入用户私有知识库。后续推荐品牌时这条会优先出现。\n"
+            "用法：当用户提到『我们用 X 牌』『我们的 X 类目供应商是 Y』时调用。\n"
+            "categories 是 component_categories.id 列表（先调 component_categories_list 看可选）。"
+            "如果用户给的类目不在已有类目里，先告诉用户，不要硬塞 free-form 字符串。\n"
+            "visibility 默认 'private'：只该客户看得见；'shared' 表示愿意贡献给社区。"
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name": {"type": "string", "description": "品牌显示名（如 'HIWIN 上银'）"},
+                "aliases": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "其它叫法（用于模糊匹配，可选）",
+                },
+                "categories": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "该品牌做的类目 id 列表（如 ['linear_guide','ball_screw']）",
+                },
+                "url": {"type": ["string", "null"]},
+                "region": {"type": ["string", "null"], "description": "如 '台湾'/'浙江温岭'"},
+                "price_tier": {"type": ["string", "null"], "description": "高端/中端/经济型 等"},
+                "typical_lead_time": {"type": ["string", "null"], "description": "现货/2 周 等"},
+                "notes": {"type": ["string", "null"], "description": "备注（账期、合同条款等）"},
+                "visibility": {
+                    "type": "string",
+                    "enum": ["private", "shared"],
+                    "default": "private",
+                },
+            },
+        },
+    ),
+    ToolDef(
+        name="brand_list",
+        description=(
+            "列出当前租户私有知识库里所有品牌。可按 category_id 过滤。"
+            "用户问『我录过哪些品牌』『我们的 X 类目有哪些供应商』时调用。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "category_id": {
+                    "type": ["string", "null"],
+                    "description": "只列做这个类目的品牌；null/省略=列全部",
+                },
+            },
+        },
+    ),
+    ToolDef(
+        name="brand_recommend",
+        description=(
+            "为某个类目推荐品牌。返回带溯源的排序列表：\n"
+            "  ★★ private  当前客户私有 KB 里录入的（最高优先）\n"
+            "  ★  shared  当前客户共享出来的\n"
+            "  ·  community 其他客户共享给社区的\n"
+            "  └ 如果以上都为空，回复中要说明，并允许 LLM 用通用知识推荐\n"
+            "    （并主动提示用户『可以用 brand_add 把常用品牌录入进来』）。\n"
+            "用户问『X 类目有哪些品牌可以选』『推荐几个 Y 厂家』时调用。"
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["category_id"],
+            "properties": {
+                "category_id": {"type": "string"},
+                "region": {"type": ["string", "null"], "description": "可选，按地区过滤"},
+                "price_tier": {"type": ["string", "null"], "description": "可选，按价位过滤"},
+                "limit": {"type": "integer", "default": 8},
+            },
+        },
+    ),
+    ToolDef(
+        name="brand_remove",
+        description="从私有知识库删除一个品牌条目（按 id）。仅能删本租户自己的。",
+        input_schema={
+            "type": "object",
+            "required": ["id"],
+            "properties": {"id": {"type": "string"}},
+        },
+    ),
+    ToolDef(
+        name="brand_update",
+        description=(
+            "修改私有知识库里一个品牌的字段。"
+            "传 null 清除该字段；不传该字段=不修改。"
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["id"],
+            "properties": {
+                "id": {"type": "string"},
+                "name": {"type": "string"},
+                "aliases": {"type": "array", "items": {"type": "string"}},
+                "categories": {"type": "array", "items": {"type": "string"}},
+                "url": {"type": ["string", "null"]},
+                "region": {"type": ["string", "null"]},
+                "price_tier": {"type": ["string", "null"]},
+                "typical_lead_time": {"type": ["string", "null"]},
+                "notes": {"type": ["string", "null"]},
+                "visibility": {"type": "string", "enum": ["private", "shared"]},
             },
         },
     ),
@@ -1037,4 +1145,263 @@ class BOMToolExecutor:
                 "skipped": skipped,
             },
             mutated=n > 0,
+        )
+
+    # ----- brand knowledge base (per-tenant) -----
+
+    @staticmethod
+    def _brand_to_dict(b: BrandEntry) -> dict[str, Any]:
+        return {
+            "id": b.id,
+            "name": b.name,
+            "aliases": b.aliases or [],
+            "url": b.url,
+            "region": b.region,
+            "categories": b.categories or [],
+            "price_tier": b.price_tier,
+            "typical_lead_time": b.typical_lead_time,
+            "notes": b.notes,
+            "source": b.source,
+            "visibility": b.visibility,
+            "upvotes": b.upvotes,
+        }
+
+    async def _t_brand_add(self, args: dict[str, Any]) -> ToolResult:
+        tenant = current_tenant()
+        name = (args.get("name") or "").strip()
+        if not name:
+            return ToolResult(ok=False, summary="name 不能为空")
+
+        # Validate categories exist (if provided) — refuse free-form garbage
+        # so brand→category links stay consistent with the taxonomy.
+        cats: list[str] = args.get("categories") or []
+        if cats:
+            valid = (
+                await self.db.execute(
+                    select(ComponentCategory.id).where(ComponentCategory.id.in_(cats))
+                )
+            ).scalars().all()
+            unknown = [c for c in cats if c not in set(valid)]
+            if unknown:
+                return ToolResult(
+                    ok=False,
+                    summary=(
+                        f"未知类目: {unknown}。"
+                        f"先调 component_categories_list 看可选 id。"
+                    ),
+                )
+
+        # Dedup: same tenant + same name → merge into existing rather than dup.
+        existing = (
+            await self.db.execute(
+                select(BrandEntry).where(
+                    BrandEntry.tenant_id == tenant,
+                    BrandEntry.name == name,
+                )
+            )
+        ).scalar_one_or_none()
+
+        if existing is not None:
+            for k in (
+                "aliases", "url", "region", "categories",
+                "price_tier", "typical_lead_time", "notes", "visibility",
+            ):
+                if k in args and args[k] is not None:
+                    setattr(existing, k, args[k])
+            await self.db.commit()
+            return ToolResult(
+                ok=True,
+                summary=f"已更新已有品牌『{existing.name}』",
+                data={"id": existing.id, "merged": True},
+                mutated=True,
+            )
+
+        entry = BrandEntry(
+            tenant_id=tenant,
+            name=name,
+            aliases=args.get("aliases") or [],
+            url=args.get("url"),
+            region=args.get("region"),
+            categories=cats,
+            price_tier=args.get("price_tier"),
+            typical_lead_time=args.get("typical_lead_time"),
+            notes=args.get("notes"),
+            source="chat",
+            source_ref=None,
+            visibility=args.get("visibility") or "private",
+            created_by=self.user_name,
+        )
+        self.db.add(entry)
+        await self.db.commit()
+        return ToolResult(
+            ok=True,
+            summary=f"已录入品牌『{name}』到{('社区共享' if entry.visibility=='shared' else '私有')}知识库",
+            data={"id": entry.id},
+            mutated=True,
+        )
+
+    async def _t_brand_list(self, args: dict[str, Any]) -> ToolResult:
+        tenant = current_tenant()
+        cat = args.get("category_id")
+        rows = (
+            await self.db.execute(
+                select(BrandEntry)
+                .where(BrandEntry.tenant_id == tenant)
+                .order_by(BrandEntry.name)
+            )
+        ).scalars().all()
+        if cat:
+            rows = [r for r in rows if cat in (r.categories or [])]
+        out = [self._brand_to_dict(r) for r in rows]
+        return ToolResult(
+            ok=True,
+            summary=f"返回 {len(out)} 个品牌" + (f"（类目={cat}）" if cat else ""),
+            data={"brands": out},
+        )
+
+    async def _t_brand_recommend(self, args: dict[str, Any]) -> ToolResult:
+        tenant = current_tenant()
+        cat = args["category_id"]
+        region = args.get("region")
+        tier = args.get("price_tier")
+        limit = int(args.get("limit") or 8)
+
+        # 1) Pull all rows that COULD match (tenant private/shared + community shared)
+        rows = (
+            await self.db.execute(
+                select(BrandEntry).where(
+                    (BrandEntry.tenant_id == tenant) | (BrandEntry.visibility == "shared")
+                )
+            )
+        ).scalars().all()
+
+        def matches(b: BrandEntry) -> bool:
+            if cat not in (b.categories or []):
+                return False
+            if region and (b.region or "") != region:
+                return False
+            if tier and (b.price_tier or "") != tier:
+                return False
+            return not b.flagged
+
+        filtered = [b for b in rows if matches(b)]
+
+        # 2) Bucket by trust tier
+        own_private = [b for b in filtered if b.tenant_id == tenant and b.visibility == "private"]
+        own_shared  = [b for b in filtered if b.tenant_id == tenant and b.visibility == "shared"]
+        community   = [b for b in filtered if b.tenant_id != tenant and b.visibility == "shared"]
+
+        # 3) Within each bucket sort by upvotes desc, then name
+        for bucket in (own_private, own_shared, community):
+            bucket.sort(key=lambda b: (-b.upvotes, b.name))
+
+        ranked: list[dict] = []
+        for b in own_private[:limit]:
+            d = self._brand_to_dict(b)
+            d["trust"] = "private"
+            ranked.append(d)
+        for b in own_shared[: max(0, limit - len(ranked))]:
+            d = self._brand_to_dict(b)
+            d["trust"] = "shared-by-you"
+            ranked.append(d)
+        for b in community[: max(0, limit - len(ranked))]:
+            d = self._brand_to_dict(b)
+            d["trust"] = "community"
+            ranked.append(d)
+
+        # 4) Resolve category for nicer summary
+        cat_obj = (
+            await self.db.execute(
+                select(ComponentCategory).where(ComponentCategory.id == cat)
+            )
+        ).scalar_one_or_none()
+        cat_name = cat_obj.name_zh if cat_obj else cat
+        common_brands = (cat_obj.common_brands if cat_obj else []) or []
+
+        if not ranked:
+            return ToolResult(
+                ok=True,
+                summary=(
+                    f"知识库里 {cat_name} 暂无录入品牌。"
+                    f"{'通用参考品牌：' + ' / '.join(common_brands[:6]) if common_brands else ''}"
+                    " 你可以用 brand_add 把常用品牌录入。"
+                ),
+                data={"recommendations": [], "fallback_brands": common_brands, "category_name": cat_name},
+            )
+
+        return ToolResult(
+            ok=True,
+            summary=f"为 {cat_name} 推荐 {len(ranked)} 个品牌（按可信度排序）",
+            data={"recommendations": ranked, "fallback_brands": common_brands, "category_name": cat_name},
+        )
+
+    async def _t_brand_remove(self, args: dict[str, Any]) -> ToolResult:
+        tenant = current_tenant()
+        bid = args["id"]
+        entry = (
+            await self.db.execute(
+                select(BrandEntry).where(
+                    BrandEntry.id == bid,
+                    BrandEntry.tenant_id == tenant,
+                )
+            )
+        ).scalar_one_or_none()
+        if not entry:
+            return ToolResult(ok=False, summary=f"品牌 {bid} 不存在或不属于当前租户")
+        name = entry.name
+        await self.db.delete(entry)
+        await self.db.commit()
+        return ToolResult(
+            ok=True,
+            summary=f"已删除品牌『{name}』",
+            mutated=True,
+        )
+
+    async def _t_brand_update(self, args: dict[str, Any]) -> ToolResult:
+        tenant = current_tenant()
+        bid = args["id"]
+        entry = (
+            await self.db.execute(
+                select(BrandEntry).where(
+                    BrandEntry.id == bid,
+                    BrandEntry.tenant_id == tenant,
+                )
+            )
+        ).scalar_one_or_none()
+        if not entry:
+            return ToolResult(ok=False, summary=f"品牌 {bid} 不存在或不属于当前租户")
+
+        # Validate categories if changed
+        if "categories" in args and args["categories"] is not None:
+            cats = args["categories"]
+            valid = (
+                await self.db.execute(
+                    select(ComponentCategory.id).where(ComponentCategory.id.in_(cats))
+                )
+            ).scalars().all()
+            unknown = [c for c in cats if c not in set(valid)]
+            if unknown:
+                return ToolResult(ok=False, summary=f"未知类目: {unknown}")
+
+        changed: list[str] = []
+        for k in (
+            "name", "aliases", "url", "region", "categories",
+            "price_tier", "typical_lead_time", "notes", "visibility",
+        ):
+            if k in args:
+                v = args[k]
+                if v is None and k in ("name", "aliases", "categories", "visibility"):
+                    # These four can't legally be null
+                    continue
+                if getattr(entry, k) != v:
+                    setattr(entry, k, v if v is not None else None)
+                    changed.append(k)
+
+        await self.db.commit()
+        if not changed:
+            return ToolResult(ok=True, summary="无变化", mutated=False)
+        return ToolResult(
+            ok=True,
+            summary=f"已更新品牌『{entry.name}』: {', '.join(changed)}",
+            mutated=True,
         )
