@@ -122,24 +122,34 @@ TOOLS: list[ToolDef] = [
     ToolDef(
         name="bom_restyle_node",
         description=(
-            "修改单个节点在 G6 图中的视觉样式。style 字段会合并到节点的 style JSON 中。"
-            "常用键: fill (填充色 hex), stroke (边框色), lineWidth, labelFill, "
-            "radius, opacity。传 null 清除该键。"
+            "修改单个节点在 BOM 图卡片上的视觉样式。style 会合并到节点 style JSON。"
+            "传 null 清除该键。\n"
+            "支持的键（优先用语义键）：\n"
+            "  · highlight (bool)：高亮该节点（红色 2px 描边）。"
+            "想标记『需关注 / 风险件 / 待审核』时用这个。\n"
+            "  · dim (bool)：把节点变灰（opacity 0.45）。"
+            "想标记『已弃用 / 待删除』时用这个。\n"
+            "  · accent (hex 颜色)：覆盖右下三角、百分比、底部进度条的状态色。"
+            "想强调某种分类配色时用这个。\n"
+            "  · badge (string)：在节点右上角显示一个短标签，"
+            "如 \"OEM\"/\"外购\"/\"重要\"。最多 4 个汉字或 8 个字母。\n"
+            "  · 兜底通用键：fill (卡片填充色)、stroke (边框色)、lineWidth、opacity。"
         ),
         input_schema={
             "type": "object",
             "required": ["node_id", "style"],
             "properties": {
                 "node_id": {"type": "string"},
-                "style": {"type": "object", "description": "G6 样式键值对"},
+                "style": {"type": "object", "description": "样式键值对，见工具说明"},
             },
         },
     ),
     ToolDef(
         name="bom_restyle_by_rule",
         description=(
-            "按规则批量改样式。例如“所有外购件改红色描边”: "
-            'filter={"notes_contains":"外购"}, style={"stroke":"#d93025","lineWidth":2}'
+            "按规则批量改样式（同 bom_restyle_node 的样式键，作用到一组节点）。"
+            "例：『所有外购件加 OEM 标签且高亮』 →"
+            ' filter={"notes_contains":"外购"}, style={"badge":"OEM","highlight":true}'
         ),
         input_schema={
             "type": "object",
@@ -168,6 +178,92 @@ TOOLS: list[ToolDef] = [
             "properties": {
                 "node_id": {"type": "string"},
                 "new_parent_id": {"type": ["string", "null"]},
+            },
+        },
+    ),
+    ToolDef(
+        name="bom_describe_node",
+        description=(
+            "返回指定节点当前所有可视元素（slot）的清单：每个 slot 当前显示什么、"
+            "支持改哪些属性。\n"
+            "**触发时机**：用户表达样式调整意图但还没说清要改哪个元素时（"
+            "例如『改一下这个节点的样式』），先用本工具拿到 slot 表，"
+            "用 markdown 表格展示给用户挑选，再据其选择调用 bom_set_slot。"
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["node_id"],
+            "properties": {"node_id": {"type": "string"}},
+        },
+    ),
+    ToolDef(
+        name="bom_set_slot",
+        description=(
+            "修改节点中**单个 slot**（视觉元素）的属性。最细粒度的样式编辑入口。\n"
+            "slot 取值：header / title / qty / metric / trend / progress / badge / card\n"
+            "  · header   顶部小号文字（默认显示零件号）\n"
+            "  · title    底部大号文字（默认显示零件名）\n"
+            "  · qty      『× N 单位』段\n"
+            "  · metric   右下角数值（默认置信度%；可改 text 或 bound 任意 BOM 字段）\n"
+            "  · trend    数值左侧的上下三角\n"
+            "  · progress 卡片底部的进度条\n"
+            "  · badge    右上角小徽章\n"
+            "  · card     卡片本身（背景/边框）\n"
+            "attrs 取值（看 slot 类型）：\n"
+            "  · text (string)：固定显示这段文本\n"
+            "  · bound (string)：把该 slot 绑定到 BOM 字段，自动跟随。"
+            "支持: part_number / part_name / quantity / uom / material / supplier"
+            " / unit_cost / notes / description / confidence_pct\n"
+            "  · color (hex)：文字 / 三角 / 进度条 / 徽章背景的颜色\n"
+            "  · visible (bool)：是否显示该元素\n"
+            "  · 仅 card slot：fill / stroke / lineWidth / opacity\n"
+            "传 null 清除该键。"
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["node_id", "slot", "attrs"],
+            "properties": {
+                "node_id": {"type": "string"},
+                "slot": {
+                    "type": "string",
+                    "enum": [
+                        "header", "title", "qty", "metric",
+                        "trend", "progress", "badge", "card",
+                    ],
+                },
+                "attrs": {"type": "object", "description": "见工具描述"},
+            },
+        },
+    ),
+    ToolDef(
+        name="bom_set_slot_by_rule",
+        description=(
+            "按规则批量改某个 slot（同 bom_set_slot 的 attrs，作用到一组节点）。\n"
+            '例：所有非标件 metric 改成显示供应商 → '
+            'filter={"notes_contains":"非标"}, slot="metric", attrs={"bound":"supplier"}'
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["filter", "slot", "attrs"],
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {
+                        "name_contains": {"type": "string"},
+                        "part_number_contains": {"type": "string"},
+                        "material_contains": {"type": "string"},
+                        "notes_contains": {"type": "string"},
+                        "level": {"type": "integer"},
+                    },
+                },
+                "slot": {
+                    "type": "string",
+                    "enum": [
+                        "header", "title", "qty", "metric",
+                        "trend", "progress", "badge", "card",
+                    ],
+                },
+                "attrs": {"type": "object"},
             },
         },
     ),
@@ -545,4 +641,193 @@ class BOMToolExecutor:
         await self.db.commit()
         return ToolResult(
             ok=True, summary=f"已移动 {node.part_name}", mutated=True
+        )
+
+    # ----- per-slot style editing -----
+
+    # Frontend slot vocabulary, kept in sync with apps/web/components/BOMGraph.tsx.
+    _SLOT_LABELS = {
+        "header":   "顶部小号文字",
+        "title":    "底部大号文字",
+        "qty":      "数量·单位段",
+        "metric":   "右下角数值",
+        "trend":    "数值左侧的上下三角",
+        "progress": "底部进度条",
+        "badge":    "右上角徽章",
+        "card":     "卡片本身（背景/边框）",
+    }
+    _BOUND_FIELDS = [
+        "part_number", "part_name", "quantity", "uom", "material",
+        "supplier", "unit_cost", "notes", "description", "confidence_pct",
+    ]
+
+    @staticmethod
+    def _slot_default_text(slot: str, n: BOMNode) -> str:
+        if slot == "header":
+            return n.part_number or ""
+        if slot == "title":
+            return n.part_name or ""
+        if slot == "qty":
+            return f"× {n.quantity} {n.uom}".strip()
+        if slot == "metric":
+            return f"{round((n.confidence or 0) * 100)}%"
+        return ""
+
+    async def _t_bom_describe_node(self, args: dict[str, Any]) -> ToolResult:
+        bom = await self._bom()
+        nid = args["node_id"]
+        node = next((n for n in bom.nodes if n.id == nid), None)
+        if not node:
+            return ToolResult(ok=False, summary=f"节点 {nid} 不存在")
+        style = dict(node.style or {})
+        slots_state = (style.get("slots") or {}) if isinstance(style.get("slots"), dict) else {}
+        out_slots = []
+        for sid, label in self._SLOT_LABELS.items():
+            cur = slots_state.get(sid) or {}
+            if sid == "card":
+                editable = ["fill", "stroke", "lineWidth", "opacity", "visible"]
+                current = {
+                    "fill": cur.get("fill", style.get("fill", "#fff")),
+                    "stroke": cur.get("stroke", style.get("stroke", "#CED4D9")),
+                    "lineWidth": cur.get("lineWidth", style.get("lineWidth", 1)),
+                    "opacity": cur.get("opacity", style.get("opacity", 1)),
+                }
+            else:
+                editable = ["color", "visible"]
+                if sid in ("header", "title", "qty", "metric", "badge"):
+                    editable = ["text", "color", "visible"] + (
+                        ["bound"] if sid in ("header", "title", "metric") else []
+                    )
+                current = {
+                    "displayed": (
+                        cur.get("text")
+                        or (
+                            f"<{cur['bound']}>" if cur.get("bound") else
+                            self._slot_default_text(sid, node)
+                        )
+                    ),
+                    "color": cur.get("color"),
+                    "visible": cur.get("visible", True),
+                    "bound": cur.get("bound"),
+                }
+            out_slots.append({
+                "id": sid,
+                "label": label,
+                "current": current,
+                "editable": editable,
+            })
+        return ToolResult(
+            ok=True,
+            summary=f"返回 {node.part_name} 的 {len(out_slots)} 个 slot 信息",
+            data={
+                "node": {
+                    "id": node.id,
+                    "part_number": node.part_number,
+                    "part_name": node.part_name,
+                },
+                "slots": out_slots,
+                "bound_fields": self._BOUND_FIELDS,
+            },
+        )
+
+    @staticmethod
+    def _merge_slot(style: dict, slot: str, attrs: dict) -> dict:
+        new_style = dict(style or {})
+        slots = dict(new_style.get("slots") or {})
+        cur = dict(slots.get(slot) or {})
+        for k, v in attrs.items():
+            if v is None:
+                cur.pop(k, None)
+            else:
+                cur[k] = v
+        if cur:
+            slots[slot] = cur
+        else:
+            slots.pop(slot, None)
+        if slots:
+            new_style["slots"] = slots
+        else:
+            new_style.pop("slots", None)
+        return new_style
+
+    async def _t_bom_set_slot(self, args: dict[str, Any]) -> ToolResult:
+        bom = await self._bom()
+        nid = args["node_id"]
+        slot = args["slot"]
+        attrs = args.get("attrs") or {}
+        if slot not in self._SLOT_LABELS:
+            return ToolResult(ok=False, summary=f"未知 slot: {slot}")
+        if not attrs:
+            return ToolResult(ok=False, summary="attrs 不能为空")
+        node = next((n for n in bom.nodes if n.id == nid), None)
+        if not node:
+            return ToolResult(ok=False, summary=f"节点 {nid} 不存在")
+        old_style = dict(node.style or {})
+        new_style = self._merge_slot(old_style, slot, attrs)
+        if new_style == old_style:
+            return ToolResult(ok=True, summary="无变化", mutated=False)
+        node.style = new_style
+        await record_edit(
+            self.db,
+            bom_id=bom.id,
+            node_id=node.id,
+            node_label=label_of(node),
+            field=FIELD_STYLE,
+            old_value=old_style,
+            new_value=new_style,
+            user_name=self.user_name,
+            source="agent",
+        )
+        await self.db.commit()
+        return ToolResult(
+            ok=True,
+            summary=f"已更新 {node.part_name} 的 {self._SLOT_LABELS[slot]}",
+            mutated=True,
+        )
+
+    async def _t_bom_set_slot_by_rule(self, args: dict[str, Any]) -> ToolResult:
+        bom = await self._bom()
+        slot = args["slot"]
+        attrs = args.get("attrs") or {}
+        f = args.get("filter") or {}
+        if slot not in self._SLOT_LABELS:
+            return ToolResult(ok=False, summary=f"未知 slot: {slot}")
+        if not attrs:
+            return ToolResult(ok=False, summary="attrs 不能为空")
+
+        nc = (f.get("name_contains") or "").lower()
+        pc = (f.get("part_number_contains") or "").lower()
+        mc = (f.get("material_contains") or "").lower()
+        ntc = (f.get("notes_contains") or "").lower()
+        lv = f.get("level")
+
+        n_hit = 0
+        for node in bom.nodes:
+            if nc and nc not in (node.part_name or "").lower(): continue
+            if pc and pc not in (node.part_number or "").lower(): continue
+            if mc and mc not in (node.material or "").lower(): continue
+            if ntc and ntc not in (node.notes or "").lower(): continue
+            if lv is not None and node.level != lv: continue
+            old_style = dict(node.style or {})
+            new_style = self._merge_slot(old_style, slot, attrs)
+            if new_style == old_style:
+                continue
+            node.style = new_style
+            await record_edit(
+                self.db,
+                bom_id=bom.id,
+                node_id=node.id,
+                node_label=label_of(node),
+                field=FIELD_STYLE,
+                old_value=old_style,
+                new_value=new_style,
+                user_name=self.user_name,
+                source="agent",
+            )
+            n_hit += 1
+        await self.db.commit()
+        return ToolResult(
+            ok=True,
+            summary=f"已批量更新 {n_hit} 个节点的 {self._SLOT_LABELS[slot]}",
+            mutated=n_hit > 0,
         )
