@@ -18,6 +18,10 @@ export interface BOMNode {
   source_ref: Record<string, unknown> | null
   confidence: number
   sort_order: number
+  // Non-std component classification (set by agent's bom_classify_* tools)
+  category_id: string | null
+  category_name: string | null
+  spec: Record<string, unknown>
 }
 
 export interface BOM {

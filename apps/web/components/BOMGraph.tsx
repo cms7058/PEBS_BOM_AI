@@ -70,6 +70,7 @@ const BOUND_RESOLVERS: Record<string, (d: any) => string> = {
   notes: (d) => d.notes || '',
   description: (d) => d.description || '',
   confidence_pct: (d) => `${Math.round((d.confidence ?? 0) * 100)}%`,
+  category: (d) => d.categoryName || '',
 }
 
 function slotOf(d: any, id: string): any {
@@ -145,23 +146,32 @@ class BomNode extends Rect {
     ;(this as any).upsert('name', GText, style, container)
   }
 
-  // Right-side metric — slot id "metric" (default: confidence percentage,
-  // colored by status, or by `accent`). The agent can rebind this slot to
-  // any BOM field (e.g. supplier) to swap what's shown here.
+  // Right-side metric — slot id "metric".
+  // Default content rules (in priority order):
+  //   1. user-set explicit text (slot.text)
+  //   2. user-set bound field (slot.bound)
+  //   3. node has been classified → show category_name (e.g. "直线导轨")
+  //   4. fall back to confidence percentage
+  // Color: explicit slot.color → accent → CATEGORY_BLUE if classified →
+  // status palette (G/B/Y/R by confidence).
   getPercentStyle(attributes: any) {
     const [width, height] = (this as any).getSize(attributes)
     const s = slotOf(this.data, 'metric')
     if (!slotVisible(s)) return null
     const accent = this.data.accent as string | undefined
     const status = statusOf(Number(this.data.confidence) || 0)
-    const defaultText = `${((Number(this.data.confidence) || 0) * 100).toFixed(0)}%`
+    const isClassified = !!this.data.categoryName
+    const defaultText = isClassified
+      ? String(this.data.categoryName)
+      : `${((Number(this.data.confidence) || 0) * 100).toFixed(0)}%`
+    const defaultColor = isClassified ? COLORS.B : COLORS[status]
     return {
       x: width / 2 - 24,
       y: height / 2 - 10,
       text: clip(slotText(this.data, 'metric', defaultText), 14),
       fontSize: 12,
       textAlign: 'right',
-      fill: s.color || accent || COLORS[status],
+      fill: s.color || accent || defaultColor,
     }
   }
 
@@ -178,9 +188,13 @@ class BomNode extends Rect {
     const s = slotOf(this.data, 'trend')
     if (!slotVisible(s)) return null
     const metric = slotOf(this.data, 'metric')
+    // Hide the up/down trend whenever the metric slot is showing something
+    // other than the confidence percentage — the trend has no meaning over
+    // a category name, supplier, etc. User can force-show via slots.trend.visible.
     const metricRebound =
       (typeof metric.text === 'string' && metric.text.length > 0) ||
-      (typeof metric.bound === 'string' && metric.bound !== 'confidence_pct')
+      (typeof metric.bound === 'string' && metric.bound !== 'confidence_pct') ||
+      (!metric.text && !metric.bound && !!this.data.categoryName)
     if (metricRebound && s.visible !== true) return null
     const percentShape = (this as any).shapeMap['percent']
     if (!percentShape) return null
@@ -398,6 +412,9 @@ function nodeData(n: BOMNode) {
     unitCost: n.unit_cost,
     notes: n.notes,
     description: n.description,
+    categoryId: n.category_id,
+    categoryName: n.category_name,
+    spec: n.spec,
     fill: typeof s.fill === 'string' ? s.fill : undefined,
     stroke: typeof s.stroke === 'string' ? s.stroke : undefined,
     lineWidth: typeof s.lineWidth === 'number' ? s.lineWidth : undefined,

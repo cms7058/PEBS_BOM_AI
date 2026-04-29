@@ -49,6 +49,19 @@ SYSTEM_PROMPT_TEMPLATE = """你是 BOM 编辑助手，帮用户查看和编辑�
 - bom_set_slot          **细粒度修改单个 slot（颜色/文本/绑定字段/显隐）**
 - bom_set_slot_by_rule  按规则批量改某个 slot
 - bom_move_node         改挂接关系（换父节点）
+- component_categories_list  列出非标件类目（直线导轨/丝杠/铝型材/定位销/联轴器…）
+- bom_classify_node     单个节点归类到某 category_id 并填 spec（结构化参数）
+- bom_classify_all      批量自动分类（启发式，不确定的节点保持未分类）
+
+【非标件分类（component category）流程】
+- 用户说『分类一下』『识别非标件』『打类目』→ 先调 bom_classify_all
+  返回中的 unclassified 列表是 agent 进一步处理的对象
+- 对 unclassified 中的件，结合 part_name / description 用你自己的判断
+  调 bom_classify_node 一一处理；不确定的就在回复里告诉用户，让 ta 决定
+- 设 spec 时键名必须严格匹配该 category 的 parameters[].name；不确定参数
+  时先只设 category_id，spec 留空
+- 设完 category_id，前端 BOM 卡片上的"右下数值"slot 会显示类目名，
+  用户在图谱上能直接看到分类结果
 
 【节点视觉元素（slot）地图】
 每个 BOM 节点是一张卡片，由以下 slot 组成：
@@ -65,7 +78,12 @@ SYSTEM_PROMPT_TEMPLATE = """你是 BOM 编辑助手，帮用户查看和编辑�
   · 所有 slot 通用：visible=false 隐藏该元素
 
 bound 可选字段：part_number / part_name / quantity / uom / material / supplier
-  / unit_cost / notes / description / confidence_pct
+  / unit_cost / notes / description / confidence_pct / category
+
+【metric slot 默认显示规则】
+  · 节点未分类（category_id=null）→ 显示 confidence%（带上下三角）
+  · 节点已分类 → 显示类目中文名（"直线导轨" 等，蓝色，无三角）
+  · 用户用 bom_set_slot 显式设了 text 或 bound → 优先该设置
 
 【中文字段 → 工具参数对照表（必须严格遵守）】
 - "零件号" / "编号" / "料号" / "PN"           → part_number

@@ -18,10 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.llm.base import ToolDef
-from app.models.bom import BOM, BOMNode
+from app.models.bom import BOM, BOMNode, ComponentCategory
+from app.services.component_classifier import classify as heuristic_classify
 from app.services.audit import (
+    FIELD_CATEGORY,
     FIELD_CREATE,
     FIELD_DELETE,
+    FIELD_SPEC,
     FIELD_STYLE,
     label_of,
     record_edit,
@@ -264,6 +267,60 @@ TOOLS: list[ToolDef] = [
                     ],
                 },
                 "attrs": {"type": "object"},
+            },
+        },
+    ),
+    ToolDef(
+        name="component_categories_list",
+        description=(
+            "列出所有可用的非标件类目（直线导轨/滚珠丝杠/铝型材/定位销/联轴器…），"
+            "返回每个类目的参数 schema 和常用品牌。在做 bom_classify_node 前可先查询，"
+            "或者用户问『有哪些类目？』时调用。"
+        ),
+        input_schema={"type": "object", "properties": {}},
+    ),
+    ToolDef(
+        name="bom_classify_node",
+        description=(
+            "把一个 BOM 节点归类到 component_categories 里的某个类目，并尽量从"
+            " part_name / part_number / description 解析出该类目要求的参数（spec）。\n"
+            "用法两种：\n"
+            "  · 你已经能确定类目和参数 → 直接传 category_id 和 spec\n"
+            "  · 你只想标注类目、参数让用户后填 → 只传 category_id，spec 省略或填部分\n"
+            "传 spec={} 表示清空规格；传 category_id=null 表示取消分类。"
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["node_id"],
+            "properties": {
+                "node_id": {"type": "string"},
+                "category_id": {
+                    "type": ["string", "null"],
+                    "description": "类目 ID（如 linear_guide）。null 取消分类。"
+                },
+                "spec": {
+                    "type": "object",
+                    "description": "结构化参数；键应匹配该类目 parameters 里的 name。"
+                },
+            },
+        },
+    ),
+    ToolDef(
+        name="bom_classify_all",
+        description=(
+            "批量自动分类整张 BOM 中尚未分类的节点。"
+            "对每个 category_id 为空的节点，根据 part_name / description 推断最合适的类目。"
+            "不确定的件保持未分类，不会强行打标。\n"
+            "返回 {classified, skipped, unclassified} 统计 + 不确定件清单。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "force": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "true 时连已分类的节点也重新评估"
+                },
             },
         },
     ),
@@ -830,4 +887,154 @@ class BOMToolExecutor:
             ok=True,
             summary=f"已批量更新 {n_hit} 个节点的 {self._SLOT_LABELS[slot]}",
             mutated=n_hit > 0,
+        )
+
+    # ----- non-std component classification -----
+
+    async def _t_component_categories_list(self, args: dict[str, Any]) -> ToolResult:
+        rows = (
+            await self.db.execute(select(ComponentCategory).order_by(ComponentCategory.sort_order))
+        ).scalars().all()
+        out = [
+            {
+                "id": c.id,
+                "name_zh": c.name_zh,
+                "name_en": c.name_en,
+                "description": c.description,
+                "parameters": c.parameters,
+                "common_brands": c.common_brands,
+                "typical_use": c.typical_use,
+            }
+            for c in rows
+        ]
+        return ToolResult(
+            ok=True,
+            summary=f"返回 {len(out)} 个类目",
+            data={"categories": out},
+        )
+
+    async def _t_bom_classify_node(self, args: dict[str, Any]) -> ToolResult:
+        bom = await self._bom()
+        nid = args["node_id"]
+        node = next((n for n in bom.nodes if n.id == nid), None)
+        if not node:
+            return ToolResult(ok=False, summary=f"节点 {nid} 不存在")
+
+        new_cat = args.get("category_id", "__missing__")
+        new_spec = args.get("spec", "__missing__")
+        if new_cat == "__missing__" and new_spec == "__missing__":
+            return ToolResult(ok=False, summary="必须传 category_id 或 spec 之一")
+
+        # Validate category exists if provided (and not null)
+        if new_cat not in ("__missing__", None):
+            cat = (
+                await self.db.execute(
+                    select(ComponentCategory).where(ComponentCategory.id == new_cat)
+                )
+            ).scalar_one_or_none()
+            if cat is None:
+                return ToolResult(ok=False, summary=f"未知类目 {new_cat!r}")
+            # Validate spec keys against the category schema if both provided
+            if new_spec not in ("__missing__", None) and isinstance(new_spec, dict):
+                allowed = {p.get("name") for p in (cat.parameters or [])}
+                unknown = [k for k in new_spec.keys() if k not in allowed]
+                if unknown:
+                    return ToolResult(
+                        ok=False,
+                        summary=(
+                            f"spec 中包含 {cat.name_zh} 未定义的键: {unknown}。"
+                            f"该类目允许的参数是: {sorted(allowed)}"
+                        ),
+                    )
+
+        changed: list[str] = []
+        label = label_of(node)
+        if new_cat != "__missing__":
+            old = node.category_id
+            new = new_cat
+            if old != new:
+                node.category_id = new
+                await record_edit(
+                    self.db, bom_id=bom.id, node_id=node.id, node_label=label,
+                    field=FIELD_CATEGORY, old_value=old, new_value=new,
+                    user_name=self.user_name, source="agent",
+                )
+                changed.append("category_id")
+        if new_spec != "__missing__":
+            old_spec = dict(node.spec or {})
+            # spec=None or {} → clear
+            new_spec_dict = dict(new_spec) if isinstance(new_spec, dict) else {}
+            if old_spec != new_spec_dict:
+                node.spec = new_spec_dict
+                await record_edit(
+                    self.db, bom_id=bom.id, node_id=node.id, node_label=label,
+                    field=FIELD_SPEC, old_value=old_spec, new_value=new_spec_dict,
+                    user_name=self.user_name, source="agent",
+                )
+                changed.append("spec")
+
+        await self.db.commit()
+        if not changed:
+            return ToolResult(ok=True, summary="无变化", mutated=False)
+        return ToolResult(
+            ok=True,
+            summary=f"已更新 {label}: {', '.join(changed)}",
+            mutated=True,
+        )
+
+    async def _t_bom_classify_all(self, args: dict[str, Any]) -> ToolResult:
+        bom = await self._bom()
+        force = bool(args.get("force"))
+
+        classified: list[dict] = []
+        unclassified: list[dict] = []
+        skipped = 0
+
+        for node in bom.nodes:
+            if node.category_id and not force:
+                skipped += 1
+                continue
+            cat_id, conf = heuristic_classify(
+                part_name=node.part_name,
+                part_number=node.part_number,
+                description=node.description,
+                notes=node.notes,
+            )
+            if cat_id is None:
+                unclassified.append({
+                    "node_id": node.id,
+                    "part_name": node.part_name,
+                    "confidence": conf,
+                })
+                continue
+            old = node.category_id
+            if old == cat_id:
+                continue
+            node.category_id = cat_id
+            await record_edit(
+                self.db, bom_id=bom.id, node_id=node.id, node_label=label_of(node),
+                field=FIELD_CATEGORY, old_value=old, new_value=cat_id,
+                user_name=self.user_name, source="agent",
+            )
+            classified.append({
+                "node_id": node.id,
+                "part_name": node.part_name,
+                "category_id": cat_id,
+                "confidence": conf,
+            })
+
+        await self.db.commit()
+        n = len(classified)
+        return ToolResult(
+            ok=True,
+            summary=(
+                f"自动分类 {n} 个节点；{len(unclassified)} 个不确定保持未分类；"
+                f"{skipped} 个已分类未动" + ("（force=true）" if force else "")
+            ),
+            data={
+                "classified": classified,
+                "unclassified": unclassified,
+                "skipped": skipped,
+            },
+            mutated=n > 0,
         )

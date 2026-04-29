@@ -21,6 +21,11 @@ class BOMNodeOut(BaseModel):
     source_ref: dict[str, Any] | None = None
     confidence: float = 1.0
     sort_order: int = 0
+    # Non-std component classification (filled by agent's bom_classify_* tools).
+    category_id: str | None = None
+    # Denormalized Chinese label so frontend can render without a 2nd request.
+    category_name: str | None = None
+    spec: dict[str, Any] = Field(default_factory=dict)
 
     class Config:
         from_attributes = True

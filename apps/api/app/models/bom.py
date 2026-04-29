@@ -82,6 +82,17 @@ class BOMNode(Base):
     unit_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # Non-standard component classification.
+    # `category_id` references ComponentCategory.id (e.g. "linear_guide").
+    # `spec` holds the structured parameter values whose keys are defined by
+    # that category's parameter schema (e.g. {"rail_width":25,"length":1500}).
+    # Both are nullable so legacy rows stay valid; agent fills them in via
+    # the bom_classify_* tools.
+    category_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("component_categories.id"), nullable=True
+    )
+    spec: Mapped[dict] = mapped_column(JSON, default=dict)
+
     # UI metadata (used by G6 for style overrides, set by Agent)
     style: Mapped[dict] = mapped_column(JSON, default=dict)
     # Link back to source: {"type": "excel_row", "row": 12} | {"type": "cad_node", "id": "..."}
@@ -91,3 +102,64 @@ class BOMNode(Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
     bom: Mapped[BOM] = relationship(back_populates="nodes")
+    category: Mapped["ComponentCategory | None"] = relationship(lazy="joined")
+
+    @property
+    def category_name(self) -> str | None:
+        """Convenience denormalisation for API responses + UI rendering.
+        Avoids a second round trip to fetch ComponentCategory just to show
+        the Chinese label on the node card.
+        """
+        return self.category.name_zh if self.category else None
+
+
+class ComponentCategory(Base):
+    """Brand-agnostic taxonomy of non-standard mechanical components.
+
+    Each row defines a *type* of part (linear guide, ball screw, dowel pin…)
+    plus the parameter schema engineers need to fill in to fully describe
+    one. Categories are deliberately vendor-neutral — specific brand SKUs
+    live in the (future) brand_entries table, not here.
+
+    Why this matters: 国标件 (M8 hex bolt etc.) is commodity — engineers
+    don't need help mapping those. The pain is in non-std precision parts
+    where each vendor uses its own part-number system. This table is the
+    common ground that lets us cross-reference HIWIN / THK / Misumi /
+    Yintai without storing any single vendor's catalog.
+    """
+
+    __tablename__ = "component_categories"
+
+    # Primary key uses a stable English slug, not UUID, so seed data and
+    # imports can reference categories by name (e.g. "linear_guide").
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    parent_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("component_categories.id"), nullable=True
+    )
+
+    name_zh: Mapped[str] = mapped_column(String(128))
+    name_en: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Parameter schema — list of dicts:
+    #   {name, label_zh, unit?, type: "enum"|"number"|"integer"|"string",
+    #    values?: [...], required?: bool, default?: any}
+    parameters: Mapped[list] = mapped_column(JSON, default=list)
+
+    # Vendor-neutral list of brands typically active in this category.
+    # Free-form list of brand display names — not tied to brand_entries yet.
+    common_brands: Mapped[list] = mapped_column(JSON, default=list)
+
+    typical_use: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Reference to GB/ISO/DIN if this category overlaps with a standard
+    # part type (most non-std categories will leave this null).
+    related_gb: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )

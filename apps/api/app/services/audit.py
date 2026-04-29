@@ -20,6 +20,8 @@ from app.models.bom import BOMNode, BOMNodeEdit
 FIELD_CREATE = "__create__"
 FIELD_DELETE = "__delete__"
 FIELD_STYLE = "style"
+FIELD_CATEGORY = "category_id"
+FIELD_SPEC = "spec"
 
 
 def stringify(v: Any) -> str | None:

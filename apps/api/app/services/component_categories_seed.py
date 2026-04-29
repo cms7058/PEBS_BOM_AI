@@ -1,0 +1,390 @@
+"""First batch of non-standard component categories.
+
+Curated for the precision-machining / automation-equipment market that's
+PEBS_BOM's primary target. Each entry:
+
+- `id`         stable English slug, used as FK from BOMNode.category_id
+- `parameters` schema engineers fill in to fully describe one part
+- `common_brands` brand-agnostic list — informational only; the real
+  per-customer brand layer (brand_entries) comes later in step 3.5
+- `related_gb` left null on purpose for non-std categories (国标件 are
+  out-of-scope; engineers don't need help mapping those)
+
+Adding a new category later: append a dict here, run scripts.seed_categories.
+The seeder is idempotent — re-running won't duplicate or wipe edits.
+"""
+
+from __future__ import annotations
+
+# ─── 5 categories covering Misumi's strongest non-std turf ───────────────
+SEED_CATEGORIES: list[dict] = [
+    # ─── 1. 直线导轨 ────────────────────────────────────────────────
+    {
+        "id": "linear_guide",
+        "parent_id": None,
+        "name_zh": "直线导轨",
+        "name_en": "Linear Guide",
+        "description": "由导轨 + 滑块组成的高精度直线运动副，是非标自动化设备最常用的导向元件。",
+        "parameters": [
+            {
+                "name": "rail_width",
+                "label_zh": "导轨宽度",
+                "unit": "mm",
+                "type": "enum",
+                "values": [9, 12, 15, 20, 25, 30, 35, 45, 55, 65],
+                "required": True,
+            },
+            {
+                "name": "rail_length",
+                "label_zh": "导轨总长",
+                "unit": "mm",
+                "type": "number",
+                "required": True,
+            },
+            {
+                "name": "slider_count",
+                "label_zh": "滑块数量",
+                "type": "integer",
+                "default": 2,
+                "required": True,
+            },
+            {
+                "name": "slider_type",
+                "label_zh": "滑块型号",
+                "type": "enum",
+                "values": ["短型(SR/MR)", "标准(SS/MS)", "加长(SL/ML)", "加长加宽(SLR)"],
+                "default": "标准(SS/MS)",
+            },
+            {
+                "name": "preload",
+                "label_zh": "预压等级",
+                "type": "enum",
+                "values": ["Z0(无预压)", "ZA(轻预压)", "ZB(中预压)"],
+                "default": "Z0(无预压)",
+            },
+            {
+                "name": "accuracy",
+                "label_zh": "精度等级",
+                "type": "enum",
+                "values": ["N(普通)", "H(高级)", "P(精密)", "SP(超精密)", "UP(顶级)"],
+                "default": "H(高级)",
+            },
+            {
+                "name": "rail_count",
+                "label_zh": "并行轨数",
+                "type": "integer",
+                "default": 1,
+                "required": False,
+            },
+        ],
+        "common_brands": [
+            "HIWIN 上银",
+            "THK",
+            "NSK",
+            "IKO",
+            "PMI 银泰",
+            "AMT 雅威达",
+            "南京工艺",
+            "米思米 Misumi",
+        ],
+        "typical_use": "自动化设备 X/Y/Z 直线运动平台，如 SMT、点胶机、CNC 加工中心、检测台。",
+        "related_gb": None,
+        "sort_order": 10,
+    },
+    # ─── 2. 滚珠丝杠 ────────────────────────────────────────────────
+    {
+        "id": "ball_screw",
+        "parent_id": None,
+        "name_zh": "滚珠丝杠",
+        "name_en": "Ball Screw",
+        "description": "把旋转运动转换为高精度直线运动的传动元件，用于精密定位场合。",
+        "parameters": [
+            {
+                "name": "shaft_diameter",
+                "label_zh": "丝杠轴径",
+                "unit": "mm",
+                "type": "enum",
+                "values": [8, 10, 12, 14, 16, 20, 25, 32, 40, 50, 63, 80],
+                "required": True,
+            },
+            {
+                "name": "lead",
+                "label_zh": "导程",
+                "unit": "mm",
+                "type": "enum",
+                "values": [1, 2, 2.5, 5, 10, 16, 20, 25, 32, 40],
+                "required": True,
+            },
+            {
+                "name": "total_length",
+                "label_zh": "丝杠总长",
+                "unit": "mm",
+                "type": "number",
+                "required": True,
+            },
+            {
+                "name": "stroke",
+                "label_zh": "有效行程",
+                "unit": "mm",
+                "type": "number",
+            },
+            {
+                "name": "accuracy",
+                "label_zh": "精度等级",
+                "type": "enum",
+                "values": ["C10(普通)", "C7(普通精密)", "C5(精密)", "C3(高精密)", "C2(超高精密)"],
+                "default": "C5(精密)",
+            },
+            {
+                "name": "preload",
+                "label_zh": "预压方式",
+                "type": "enum",
+                "values": ["无预压", "单螺母预压", "双螺母预压"],
+                "default": "单螺母预压",
+            },
+            {
+                "name": "end_machining",
+                "label_zh": "两端加工方式",
+                "type": "enum",
+                "values": ["标准两端加工", "BK/BF 端", "EK/EF 端", "客户图纸"],
+                "default": "标准两端加工",
+            },
+        ],
+        "common_brands": [
+            "HIWIN 上银",
+            "THK",
+            "NSK",
+            "TBI",
+            "PMI 银泰",
+            "南京工艺 GZB",
+            "汉江机床",
+            "米思米 Misumi",
+        ],
+        "typical_use": "数控机床进给轴、机械手 Z 轴、压机驱动、精密升降平台。",
+        "related_gb": None,
+        "sort_order": 20,
+    },
+    # ─── 3. 铝型材 ──────────────────────────────────────────────────
+    {
+        "id": "aluminum_extrusion",
+        "parent_id": None,
+        "name_zh": "工业铝型材",
+        "name_en": "Aluminum Extrusion",
+        "description": "标准化模数铝合金型材，是非标设备机架/防护罩/工作台的主要结构材料。",
+        "parameters": [
+            {
+                "name": "series",
+                "label_zh": "系列",
+                "type": "enum",
+                "values": ["20系列", "30系列", "40系列", "45系列", "50系列", "60系列", "80系列", "90系列", "100系列"],
+                "required": True,
+            },
+            {
+                "name": "cross_section",
+                "label_zh": "截面规格",
+                "type": "enum",
+                "values": [
+                    "2020", "2040",
+                    "3030", "3060", "3090",
+                    "4040", "4080", "4040R",
+                    "4545", "4590",
+                    "5050",
+                    "6060", "6090", "60120",
+                    "8080", "80160",
+                    "9090",
+                    "100100",
+                ],
+                "required": True,
+            },
+            {
+                "name": "length",
+                "label_zh": "切割长度",
+                "unit": "mm",
+                "type": "number",
+                "required": True,
+            },
+            {
+                "name": "slot_type",
+                "label_zh": "槽型",
+                "type": "enum",
+                "values": ["欧标(欧6/欧8/欧10)", "国标(国标6/国标8)"],
+                "default": "欧标(欧8)",
+            },
+            {
+                "name": "surface",
+                "label_zh": "表面处理",
+                "type": "enum",
+                "values": ["银白阳极氧化", "黑色阳极氧化", "原色拉丝", "其它喷涂"],
+                "default": "银白阳极氧化",
+            },
+            {
+                "name": "alloy",
+                "label_zh": "材质牌号",
+                "type": "enum",
+                "values": ["6063-T5", "6061-T6", "其它"],
+                "default": "6063-T5",
+            },
+            {
+                "name": "end_machining",
+                "label_zh": "端面加工",
+                "type": "enum",
+                "values": ["切平", "钻孔攻丝", "客户图纸"],
+                "default": "切平",
+            },
+        ],
+        "common_brands": [
+            "BOSCH Rexroth",
+            "ITEM",
+            "FATH",
+            "SUS",
+            "上海荣鹏 RP",
+            "广州亿丰 YF",
+            "尚品 SP",
+            "米思米 Misumi",
+        ],
+        "typical_use": "设备机架、安全围栏、流水线工作台、机器人外罩。",
+        "related_gb": "GB/T 26667（参考）",
+        "sort_order": 30,
+    },
+    # ─── 4. 定位销 ──────────────────────────────────────────────────
+    {
+        "id": "dowel_pin",
+        "parent_id": None,
+        "name_zh": "精密定位销",
+        "name_en": "Precision Dowel Pin",
+        "description": "用于工件、模具、夹具之间高精度位置定位的销轴类零件，区别于国标普通圆柱销。",
+        "parameters": [
+            {
+                "name": "head_type",
+                "label_zh": "头部形式",
+                "type": "enum",
+                "values": ["无头光销", "带头", "外螺纹", "内螺纹拔销", "锥度", "球头"],
+                "required": True,
+            },
+            {
+                "name": "diameter",
+                "label_zh": "销径",
+                "unit": "mm",
+                "type": "enum",
+                "values": [3, 4, 5, 6, 8, 10, 12, 13, 16, 20, 25, 30],
+                "required": True,
+            },
+            {
+                "name": "length",
+                "label_zh": "总长",
+                "unit": "mm",
+                "type": "number",
+                "required": True,
+            },
+            {
+                "name": "tolerance",
+                "label_zh": "公差",
+                "type": "enum",
+                "values": ["g6", "h6", "h7", "m6", "n6"],
+                "default": "g6",
+            },
+            {
+                "name": "material",
+                "label_zh": "材质",
+                "type": "enum",
+                "values": ["SUJ2 轴承钢", "SUS304", "SUS440C", "SKD11", "SKH51 高速钢", "氮化处理钢"],
+                "default": "SUJ2 轴承钢",
+            },
+            {
+                "name": "surface_treatment",
+                "label_zh": "表面处理",
+                "type": "enum",
+                "values": ["原色研磨", "氮化", "镀硬铬", "DLC"],
+                "default": "原色研磨",
+            },
+        ],
+        "common_brands": [
+            "MISUMI 米思米",
+            "PUNCHIND 标点",
+            "DAYTON",
+            "SANKYO 三协",
+            "FIBRO",
+        ],
+        "typical_use": "夹具定位、模具导向、工装快换基准、CMM 检测夹具。",
+        "related_gb": "GB/T 119.1（普通销，仅参考；精密销超出此标）",
+        "sort_order": 40,
+    },
+    # ─── 5. 联轴器 ──────────────────────────────────────────────────
+    {
+        "id": "coupling",
+        "parent_id": None,
+        "name_zh": "联轴器",
+        "name_en": "Shaft Coupling",
+        "description": "连接两根轴并传递扭矩，能补偿少量轴向 / 径向 / 角向偏差。非标设备里电机-丝杠之间的标配。",
+        "parameters": [
+            {
+                "name": "type",
+                "label_zh": "联轴器类型",
+                "type": "enum",
+                "values": [
+                    "梅花式(弹性体)",
+                    "膜片式",
+                    "波纹管式",
+                    "十字滑块式(欧氏)",
+                    "刚性夹紧式",
+                    "弹性套柱销式",
+                ],
+                "required": True,
+            },
+            {
+                "name": "outer_diameter",
+                "label_zh": "外径",
+                "unit": "mm",
+                "type": "enum",
+                "values": [12, 16, 19, 22, 25, 30, 34, 40, 50, 56, 65, 82, 95],
+                "required": True,
+            },
+            {
+                "name": "bore_a",
+                "label_zh": "A 端孔径",
+                "unit": "mm",
+                "type": "number",
+                "required": True,
+            },
+            {
+                "name": "bore_b",
+                "label_zh": "B 端孔径",
+                "unit": "mm",
+                "type": "number",
+                "required": True,
+            },
+            {
+                "name": "rated_torque",
+                "label_zh": "额定扭矩",
+                "unit": "N·m",
+                "type": "number",
+            },
+            {
+                "name": "fastening",
+                "label_zh": "固定方式",
+                "type": "enum",
+                "values": ["夹紧式(无键)", "顶丝(单/双)", "键槽配合"],
+                "default": "夹紧式(无键)",
+            },
+            {
+                "name": "material",
+                "label_zh": "本体材质",
+                "type": "enum",
+                "values": ["铝合金 A2017", "不锈钢 SUS303", "黄铜", "工程塑料"],
+                "default": "铝合金 A2017",
+            },
+        ],
+        "common_brands": [
+            "MIKI PULLEY 三木",
+            "KTR",
+            "NBK",
+            "Rotex/KTR",
+            "SUNG-IL 神一",
+            "米思米 Misumi",
+            "锐马 RIMA",
+        ],
+        "typical_use": "伺服 / 步进电机轴 与 滚珠丝杠 / 减速机输入轴 之间的连接。",
+        "related_gb": None,
+        "sort_order": 50,
+    },
+]
