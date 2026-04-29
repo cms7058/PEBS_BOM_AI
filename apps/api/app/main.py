@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.db import engine
 from app.models import Base
-from app.routes import agent, bom, brands, export, hierarchy, upload
+from app.routes import agent, bom, brands, categories, export, hierarchy, upload
 from app.services.storage import store
 
 
@@ -50,6 +50,7 @@ app.include_router(hierarchy.router)
 app.include_router(agent.router)
 app.include_router(export.router)
 app.include_router(brands.router)
+app.include_router(categories.router)
 
 
 @app.get("/health")

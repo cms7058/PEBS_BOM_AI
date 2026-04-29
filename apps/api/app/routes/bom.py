@@ -11,11 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db import get_db
-from app.models.bom import BOM, BOMNode, BOMNodeEdit
+from app.models.bom import BOM, BOMNode, BOMNodeEdit, ComponentCategory
 from app.schemas import BOMListItem, BOMNodeOut, BOMOut
 from app.services.audit import (
+    FIELD_CATEGORY,
     FIELD_CREATE,
     FIELD_DELETE,
+    FIELD_SPEC,
     FIELD_STYLE,
     label_of,
     record_edit,
@@ -152,6 +154,118 @@ async def patch_node(
     return BOMNodeOut.model_validate(node)
 
 
+class ClassificationPatch(BaseModel):
+    """Body for PATCH .../classification.
+
+    Either field can be omitted to leave it unchanged. To CLEAR a field
+    explicitly, pass `category_id=None` or `spec={}`.
+    """
+    category_id: str | None = None
+    spec: dict[str, Any] | None = None
+    # Sentinel pattern: treat the FastAPI default of "field absent in JSON"
+    # as "don't touch", and explicit null as "clear". Pydantic v2 distinguishes
+    # via __pydantic_fields_set__.
+    model_config = {"extra": "forbid"}
+
+
+@router.patch("/{bom_id}/nodes/{node_id}/classification", response_model=BOMNodeOut)
+async def patch_node_classification(
+    bom_id: str,
+    node_id: str,
+    body: ClassificationPatch,
+    db: AsyncSession = Depends(get_db),
+    x_user_name: str | None = Header(default=None, alias="X-User-Name"),
+) -> BOMNodeOut:
+    """Set a node's category_id and/or structured spec.
+
+    Mirrors the agent's bom_classify_node tool but bypasses the LLM round-
+    trip — used by the SelectionConfiguratorModal where the user picks
+    category and parameters explicitly via UI.
+    """
+    q = select(BOMNode).where(BOMNode.id == node_id, BOMNode.bom_id == bom_id)
+    node = (await db.execute(q)).scalar_one_or_none()
+    if not node:
+        raise HTTPException(404, "Node not found")
+
+    fields_set = body.model_fields_set
+    user_name = decode_user_name(x_user_name)
+    label = label_of(node)
+    written = 0
+
+    if "category_id" in fields_set:
+        new_cat = body.category_id  # may be None (clear)
+        # Validate category exists if non-null
+        if new_cat is not None:
+            cat = (
+                await db.execute(
+                    select(ComponentCategory).where(ComponentCategory.id == new_cat)
+                )
+            ).scalar_one_or_none()
+            if cat is None:
+                raise HTTPException(400, f"Unknown category_id: {new_cat}")
+        if node.category_id != new_cat:
+            await record_edit(
+                db, bom_id=bom_id, node_id=node.id, node_label=label,
+                field=FIELD_CATEGORY,
+                old_value=node.category_id, new_value=new_cat,
+                user_name=user_name, source="modal",
+            )
+            node.category_id = new_cat
+            written += 1
+            # Clearing category_id should also wipe spec (it's no longer
+            # interpretable without a schema).
+            if new_cat is None and node.spec:
+                await record_edit(
+                    db, bom_id=bom_id, node_id=node.id, node_label=label,
+                    field=FIELD_SPEC,
+                    old_value=dict(node.spec or {}), new_value={},
+                    user_name=user_name, source="modal",
+                )
+                node.spec = {}
+                written += 1
+
+    if "spec" in fields_set:
+        new_spec = dict(body.spec or {})
+        # Validate spec keys against the (effective) category's parameter schema
+        effective_cat_id = (
+            body.category_id if "category_id" in fields_set else node.category_id
+        )
+        if effective_cat_id and new_spec:
+            cat = (
+                await db.execute(
+                    select(ComponentCategory).where(ComponentCategory.id == effective_cat_id)
+                )
+            ).scalar_one_or_none()
+            if cat is not None:
+                allowed = {p.get("name") for p in (cat.parameters or [])}
+                unknown = [k for k in new_spec.keys() if k not in allowed]
+                if unknown:
+                    raise HTTPException(
+                        400,
+                        f"spec contains unknown keys for {cat.name_zh}: {unknown}. "
+                        f"Allowed: {sorted(allowed)}",
+                    )
+        old_spec = dict(node.spec or {})
+        if old_spec != new_spec:
+            await record_edit(
+                db, bom_id=bom_id, node_id=node.id, node_label=label,
+                field=FIELD_SPEC,
+                old_value=old_spec, new_value=new_spec,
+                user_name=user_name, source="modal",
+            )
+            node.spec = new_spec
+            written += 1
+
+    if written == 0:
+        # No-op patch — return current state without bumping anything.
+        await db.refresh(node)
+        return BOMNodeOut.model_validate(node)
+
+    await db.commit()
+    await db.refresh(node)
+    return BOMNodeOut.model_validate(node)
+
+
 class EditOut(BaseModel):
     id: str
     node_id: str
@@ -180,6 +294,8 @@ _FIELD_LABELS = {
     "level": "层级",
     "sort_order": "排序",
     "style": "样式",
+    FIELD_CATEGORY: "类目",
+    FIELD_SPEC: "规格参数",
     FIELD_CREATE: "新增",
     FIELD_DELETE: "删除",
 }

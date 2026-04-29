@@ -93,10 +93,12 @@ function SelectionContextCard({
   node,
   onClear,
   onUseQuickPrompt,
+  onOpenConfigurator,
 }: {
   node: BOMNode
   onClear?: () => void
   onUseQuickPrompt: (text: string) => void
+  onOpenConfigurator?: () => void
 }) {
   const ref = node.part_name || node.part_number || node.id.slice(0, 8)
   const specEntries = Object.entries(node.spec || {}).slice(0, 4)
@@ -223,6 +225,25 @@ function SelectionContextCard({
         />
       )}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {onOpenConfigurator && (
+          // Distinct from chat prompts — this opens a UI modal instead.
+          // Filled style (vs outline) signals it's the primary action.
+          <button
+            onClick={onOpenConfigurator}
+            style={{
+              background: '#1d4ed8',
+              border: '1px solid #1d4ed8',
+              color: '#fff',
+              padding: '3px 8px',
+              borderRadius: 4,
+              fontSize: 12,
+              cursor: 'pointer',
+              fontWeight: 500,
+            }}
+          >
+            🛠 选型
+          </button>
+        )}
         {prompts.map((p) => (
           <button
             key={p.label}
@@ -263,6 +284,7 @@ export default function AgentSidebar({
   onBomUpdated,
   selectedNode,
   onClearSelection,
+  onOpenConfigurator,
 }: {
   bomId: string
   onBomUpdated?: () => void
@@ -271,6 +293,9 @@ export default function AgentSidebar({
   // prompts target this node specifically.
   selectedNode?: BOMNode | null
   onClearSelection?: () => void
+  // Called when the user clicks "🛠 选型" on the context card. Workspace
+  // owns the modal so it can refresh the BOM after save.
+  onOpenConfigurator?: () => void
 }) {
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [input, setInput] = useState('')
@@ -450,6 +475,7 @@ export default function AgentSidebar({
           node={selectedNode}
           onClear={onClearSelection}
           onUseQuickPrompt={(text) => setInput(text)}
+          onOpenConfigurator={onOpenConfigurator}
         />
       )}
       <div style={{ padding: 10, borderTop: '1px solid #e5e7eb', display: 'flex', gap: 8 }}>

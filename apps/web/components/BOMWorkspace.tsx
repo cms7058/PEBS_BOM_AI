@@ -7,6 +7,7 @@ import BOMTable from './BOMTable'
 import BOMGraph from './BOMGraph'
 import AgentSidebar from './AgentSidebar'
 import HierarchyRulePanel from './HierarchyRulePanel'
+import SelectionConfiguratorModal from './SelectionConfiguratorModal'
 
 const SPLIT_STORAGE_KEY = 'bom.split.topRatio'
 const AGENT_SPLIT_KEY = 'bom.split.agentRatio'
@@ -31,6 +32,11 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
   // quick prompts targeting that node.
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const selectedNode = selectedId ? bom.nodes.find((n) => n.id === selectedId) || null : null
+
+  // Selection configurator modal — opens when user clicks "🛠 选型" on the
+  // context card. Workspace owns the open state so it can reload BOM after
+  // save (via the existing reload() callback).
+  const [configuratorOpen, setConfiguratorOpen] = useState(false)
 
   // Top panel (graph) takes `topRatio` of the .bom-main column; the
   // bottom panel (table) gets the rest. Persisted across reloads.
@@ -219,10 +225,19 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
               onBomUpdated={reload}
               selectedNode={selectedNode}
               onClearSelection={() => setSelectedId(null)}
+              onOpenConfigurator={() => setConfiguratorOpen(true)}
             />
           </div>
         </div>
       </div>
+      {configuratorOpen && selectedNode && (
+        <SelectionConfiguratorModal
+          bomId={bom.id}
+          node={selectedNode}
+          onClose={() => setConfiguratorOpen(false)}
+          onSaved={reload}
+        />
+      )}
     </>
   )
 }

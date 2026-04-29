@@ -101,6 +101,70 @@ export async function recommendBrands(
   return res.json()
 }
 
+// ─── Component categories (non-std taxonomy) ─────────────────────────────
+
+export interface ParameterDef {
+  name: string
+  label_zh: string
+  unit?: string
+  type: 'enum' | 'number' | 'integer' | 'string'
+  values?: (string | number)[]
+  required?: boolean
+  default?: string | number
+}
+
+export interface ComponentCategory {
+  id: string
+  parent_id: string | null
+  name_zh: string
+  name_en: string
+  description: string | null
+  parameters: ParameterDef[]
+  common_brands: string[]
+  typical_use: string | null
+  related_gb: string | null
+  sort_order: number
+}
+
+export async function listCategories(signal?: AbortSignal): Promise<ComponentCategory[]> {
+  const res = await fetch(`${API_BASE}/component-categories`, {
+    cache: 'no-store',
+    signal,
+  })
+  if (!res.ok) throw new Error(`component-categories failed: ${res.status}`)
+  const d = await res.json()
+  return d.categories || []
+}
+
+// ─── Node classification ─────────────────────────────────────────────────
+
+export async function classifyNode(
+  bomId: string,
+  nodeId: string,
+  patch: { category_id?: string | null; spec?: Record<string, unknown> },
+  userName?: string,
+): Promise<BOMNode> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (userName) headers['X-User-Name'] = encodeURIComponent(userName)
+  const res = await fetch(
+    `${API_BASE}/boms/${bomId}/nodes/${nodeId}/classification`,
+    {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify(patch),
+    },
+  )
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      const body = await res.json()
+      detail = body?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `classify failed: ${res.status}`)
+  }
+  return res.json()
+}
+
 export function exportUrl(bomId: string): string {
   return `${API_BASE}/export/${bomId}.xlsx`
 }
