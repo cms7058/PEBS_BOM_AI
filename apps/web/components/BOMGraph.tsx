@@ -15,6 +15,8 @@ import type { BOMNode } from '@/lib/api'
 
 interface Props {
   nodes: BOMNode[]
+  selectedId?: string | null
+  onSelect?: (id: string | null) => void
 }
 
 // ─── Status color palette (from fund-flow example) ────────────────────────
@@ -318,17 +320,25 @@ class BomNode extends Rect {
 
   // Card body — slot id "card", plus legacy whole-node shortcuts
   // (highlight / dim / fill / stroke / lineWidth / opacity at the top level).
+  // `selected` (set by BOMGraph from the workspace's selectedId state)
+  // wins over user style for the border treatment so the user always
+  // knows which node the chat is currently anchored to.
   getKeyStyle(attributes: any) {
     const keyStyle = (super.getKeyStyle as any)(attributes)
     const u = this.data
     const card = slotOf(u, 'card')
     const highlight = u.highlight === true
     const dim = u.dim === true
+    const selected = u.selected === true
     return {
       ...keyStyle,
       fill: card.fill || u.fill || '#fff',
-      lineWidth: card.lineWidth ?? u.lineWidth ?? (highlight ? 2 : 1),
-      stroke: card.stroke || u.stroke || (highlight ? COLORS.R : GREY),
+      lineWidth: selected
+        ? 3
+        : (card.lineWidth ?? u.lineWidth ?? (highlight ? 2 : 1)),
+      stroke: selected
+        ? COLORS.B
+        : (card.stroke || u.stroke || (highlight ? COLORS.R : GREY)),
       opacity: card.opacity ?? u.opacity ?? (dim ? 0.45 : 1),
     }
   }
@@ -429,7 +439,7 @@ function nodeData(n: BOMNode) {
   }
 }
 
-function toGraphData(nodes: BOMNode[]) {
+function toGraphData(nodes: BOMNode[], selectedId: string | null = null) {
   if (nodes.length === 0) return { nodes: [], edges: [] }
   const ids = new Set(nodes.map((n) => n.id))
 
@@ -442,6 +452,7 @@ function toGraphData(nodes: BOMNode[]) {
   const g6Nodes: any[] = nodes.map((n) => ({
     id: n.id,
     ...nodeData(n),
+    selected: selectedId === n.id,
   }))
   const g6Edges: any[] = nodes
     .filter((n) => n.parent_id && ids.has(n.parent_id))
@@ -478,9 +489,13 @@ function toGraphData(nodes: BOMNode[]) {
   return { nodes: g6Nodes, edges: g6Edges }
 }
 
-export default function BOMGraph({ nodes }: Props) {
+export default function BOMGraph({ nodes, selectedId, onSelect }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const graphRef = useRef<Graph | null>(null)
+  // Latest onSelect — held in a ref so the mount-once effect can still call
+  // the freshest callback (props change but the graph instance persists).
+  const onSelectRef = useRef(onSelect)
+  useEffect(() => { onSelectRef.current = onSelect }, [onSelect])
   // Tracks which mount instance is current; used to ignore async work
   // (render promises) that resolve after we've already destroyed the graph.
   const aliveRef = useRef(true)
@@ -495,7 +510,7 @@ export default function BOMGraph({ nodes }: Props) {
     const graph = new Graph({
       container: containerRef.current,
       autoFit: 'view',
-      data: toGraphData(nodes),
+      data: toGraphData(nodes, selectedId ?? null),
       node: {
         type: 'bom-node',
         style: {
@@ -521,6 +536,17 @@ export default function BOMGraph({ nodes }: Props) {
     })
 
     graphRef.current = graph
+
+    // Wire G6 click events → React onSelect callback.
+    // 'node:click' fires for left-click on any node (incl. the synthetic root).
+    // 'canvas:click' fires when the user clicks empty area → deselect.
+    graph.on('node:click', (evt: any) => {
+      const id = evt?.target?.id ?? evt?.itemId ?? null
+      if (typeof id === 'string' && id !== SYNTHETIC_ROOT_ID) {
+        onSelectRef.current?.(id)
+      }
+    })
+    graph.on('canvas:click', () => onSelectRef.current?.(null))
 
     // Defer render() to next frame. React 18 strict-mode does mount → unmount →
     // remount in dev; if we render() synchronously, the first mount's async
@@ -575,7 +601,7 @@ export default function BOMGraph({ nodes }: Props) {
       id = null
       if (!aliveRef.current || (graph as any).destroyed) return
       try {
-        graph.setData(toGraphData(nodes))
+        graph.setData(toGraphData(nodes, selectedId ?? null))
         graph.render().catch(() => {
           /* ignore late errors */
         })
@@ -586,7 +612,7 @@ export default function BOMGraph({ nodes }: Props) {
     return () => {
       if (id !== null) cancelAnimationFrame(id)
     }
-  }, [nodes])
+  }, [nodes, selectedId])
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 }

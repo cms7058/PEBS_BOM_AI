@@ -26,6 +26,11 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
   // imperatively-managed) fully remount with the fresh data — no risk of
   // a stale internal cache surviving the prop change.
   const [refreshKey, setRefreshKey] = useState(0)
+  // Cross-pane selection: clicking a node in the graph or a row in the
+  // table sets this; the agent sidebar reads it to pin context + show
+  // quick prompts targeting that node.
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const selectedNode = selectedId ? bom.nodes.find((n) => n.id === selectedId) || null : null
 
   // Top panel (graph) takes `topRatio` of the .bom-main column; the
   // bottom panel (table) gets the rest. Persisted across reloads.
@@ -169,7 +174,11 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
               {/* No key= here: BOMGraph updates the G6 graph in-place via
                   setData() when `nodes` changes. Force-remounting was racy
                   with G6 v5's async render and crashed inside graph.js. */}
-              <BOMGraph nodes={bom.nodes} />
+              <BOMGraph
+                nodes={bom.nodes}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+              />
             </div>
           </div>
           <div
@@ -188,6 +197,8 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
                 nodes={bom.nodes}
                 bomId={bom.id}
                 onChanged={reload}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
               />
             </div>
           </div>
@@ -203,7 +214,12 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
         <div className="panel" style={agentStyle}>
           <div className="panel-header">智能体对话 (MiniMax M2.7)</div>
           <div className="panel-body">
-            <AgentSidebar bomId={bom.id} onBomUpdated={reload} />
+            <AgentSidebar
+              bomId={bom.id}
+              onBomUpdated={reload}
+              selectedNode={selectedNode}
+              onClearSelection={() => setSelectedId(null)}
+            />
           </div>
         </div>
       </div>

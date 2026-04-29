@@ -81,10 +81,14 @@ export default function BOMTable({
   nodes,
   bomId,
   onChanged,
+  selectedId,
+  onSelect,
 }: {
   nodes: BOMNode[]
   bomId?: string
   onChanged?: () => void
+  selectedId?: string | null
+  onSelect?: (id: string | null) => void
 }) {
   // Default: all collapsed — only L0 (top-level) nodes visible. The user
   // expands branches manually with the carets, or with 全部展开 below.
@@ -212,7 +216,11 @@ export default function BOMTable({
   }
 
   // Row background tint by depth so visual grouping is obvious even when scrolled.
+  // Selected row wins: bright blue band so user sees what chat is anchored to.
   const getRowStyle = (p: any) => {
+    if (selectedId && p.data.id === selectedId) {
+      return { background: '#deebff' }
+    }
     const d: number = p.data.__depth
     if (d === 0) return { background: '#f6f9ff' }
     if (d === 1) return { background: '#fcfdff' }
@@ -307,6 +315,12 @@ export default function BOMTable({
           getRowStyle={getRowStyle}
           rowHeight={30}
           animateRows
+          onRowClicked={(e: any) => {
+            // Click anywhere on the row → select that node. The chat
+            // sidebar listens to selectedId and pins context to it.
+            const id = e?.data?.id
+            if (id) onSelect?.(id)
+          }}
           onCellValueChanged={(e: any) => {
             // ag-grid fires this AFTER the in-memory row has been mutated.
             // We capture old/new so we can roll back if user cancels.

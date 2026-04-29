@@ -1,6 +1,131 @@
 'use client'
 import { useState } from 'react'
+import type { BOMNode } from '@/lib/api'
 import { chatStream } from '@/lib/api'
+
+// Pinned card showing the currently-selected node, plus 4 quick prompts
+// that pre-fill the input box (don't auto-send — user can edit before
+// hitting Enter). The label always names the part so the model has the
+// reference unambiguously when the prompt fires.
+function SelectionContextCard({
+  node,
+  onClear,
+  onUseQuickPrompt,
+}: {
+  node: BOMNode
+  onClear?: () => void
+  onUseQuickPrompt: (text: string) => void
+}) {
+  const ref = node.part_name || node.part_number || node.id.slice(0, 8)
+  const specEntries = Object.entries(node.spec || {}).slice(0, 4)
+  const prompts: Array<{ label: string; text: string }> = []
+
+  if (!node.category_id) {
+    prompts.push({
+      label: '🔍 这是什么类目？',
+      text: `${ref} 看起来是什么类目？如果能确定，把它分类到对应类目下。`,
+    })
+  } else {
+    prompts.push({
+      label: '✨ 推荐品牌',
+      text: `给我推荐几个${node.category_name}的品牌，看看私有库里有没有，没有就给通用建议。`,
+    })
+    prompts.push({
+      label: '📐 规格',
+      text: `${ref} 现在的规格是什么？哪些参数还没填？`,
+    })
+  }
+  prompts.push({
+    label: '🎨 改样式',
+    text: `改一下『${ref}』的样式`,
+  })
+
+  return (
+    <div
+      style={{
+        padding: '8px 12px',
+        background: '#eff6ff',
+        borderTop: '1px solid #bfdbfe',
+        borderBottom: '1px solid #bfdbfe',
+        fontSize: 12,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+        <span style={{ color: '#1d4ed8', fontWeight: 500 }}>📌 已选中</span>
+        <span style={{ color: '#1f2329', fontWeight: 600 }}>{node.part_name}</span>
+        {node.part_number && node.part_number !== node.part_name && (
+          <span style={{ color: '#6b7280' }}>· {node.part_number}</span>
+        )}
+        {node.category_name && (
+          <span
+            style={{
+              fontSize: 11,
+              color: '#fff',
+              background: '#1783FF',
+              padding: '1px 6px',
+              borderRadius: 8,
+            }}
+          >
+            {node.category_name}
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
+        {onClear && (
+          <button
+            onClick={onClear}
+            title="取消选中"
+            style={{
+              border: 'none',
+              background: 'transparent',
+              cursor: 'pointer',
+              color: '#6b7280',
+              fontSize: 14,
+              padding: '0 4px',
+            }}
+          >
+            ×
+          </button>
+        )}
+      </div>
+      {specEntries.length > 0 && (
+        <div style={{ color: '#374151', marginBottom: 6, lineHeight: 1.5 }}>
+          {specEntries.map(([k, v]) => (
+            <span
+              key={k}
+              style={{
+                marginRight: 8,
+                fontFamily: 'monospace',
+                fontSize: 11,
+                color: '#1f2937',
+              }}
+            >
+              {k}={String(v)}
+            </span>
+          ))}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {prompts.map((p) => (
+          <button
+            key={p.label}
+            onClick={() => onUseQuickPrompt(p.text)}
+            style={{
+              background: '#fff',
+              border: '1px solid #bfdbfe',
+              color: '#1d4ed8',
+              padding: '3px 8px',
+              borderRadius: 4,
+              fontSize: 12,
+              cursor: 'pointer',
+            }}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 interface ToolCallRecord {
   name: string
@@ -18,9 +143,16 @@ interface Msg {
 export default function AgentSidebar({
   bomId,
   onBomUpdated,
+  selectedNode,
+  onClearSelection,
 }: {
   bomId: string
   onBomUpdated?: () => void
+  // The currently-selected BOMNode (set by clicking on the graph or table).
+  // When non-null, a context card appears above the input box and quick
+  // prompts target this node specifically.
+  selectedNode?: BOMNode | null
+  onClearSelection?: () => void
 }) {
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [input, setInput] = useState('')
@@ -194,6 +326,13 @@ export default function AgentSidebar({
           </div>
         ))}
       </div>
+      {selectedNode && (
+        <SelectionContextCard
+          node={selectedNode}
+          onClear={onClearSelection}
+          onUseQuickPrompt={(text) => setInput(text)}
+        />
+      )}
       <div style={{ padding: 10, borderTop: '1px solid #e5e7eb', display: 'flex', gap: 8 }}>
         <input
           style={{
@@ -211,7 +350,11 @@ export default function AgentSidebar({
               send()
             }
           }}
-          placeholder="向智能体提问或下指令…"
+          placeholder={
+            selectedNode
+              ? `针对『${selectedNode.part_name}』提问或下指令…`
+              : '向智能体提问或下指令…'
+          }
           disabled={busy}
         />
         <button className="btn btn-primary" onClick={send} disabled={busy}>
