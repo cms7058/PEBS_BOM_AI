@@ -55,16 +55,17 @@ async def run(bom_id: str) -> int:
 
         ex = BOMToolExecutor(db=db, bom_id=bom_id, user_name="smoke-classify")
 
-        # Test 1: list returns 5 categories
+        # Test 1: list returns at least the 5 original categories.
+        # New ones may have been added (proximity_sensor, gearbox, etc.) — tolerate.
         r = await ex.dispatch("component_categories_list", {})
         cats = (r.data or {}).get("categories") or []
         ids = {c["id"] for c in cats}
-        expected = {"linear_guide", "ball_screw", "aluminum_extrusion", "dowel_pin", "coupling"}
-        if not r.ok or ids != expected:
-            print(f"[fail] categories_list: got {ids}, expected {expected}")
+        required = {"linear_guide", "ball_screw", "aluminum_extrusion", "dowel_pin", "coupling"}
+        if not r.ok or not required.issubset(ids):
+            print(f"[fail] categories_list: missing required {required - ids}")
             failures += 1
         else:
-            print(f"[ok]   categories_list returned {len(cats)} categories")
+            print(f"[ok]   categories_list returned {len(cats)} categories (≥5 required)")
 
         # Test 2: classify with valid category + spec
         r = await ex.dispatch("bom_classify_node", {

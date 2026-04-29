@@ -72,6 +72,62 @@ _RULES: dict[str, dict] = {
         "negative": ["油管接头", "气管接头"],
         "weight": 1.0,
     },
+    "timing_belt_pulley": {
+        "positive": [
+            "同步带轮", "同步轮", "正时带轮", "皮带轮(同步)",
+            "timing pulley", "timing belt pulley", "synchro pulley",
+            r"\bHTD\d", r"\bMXL\b", r"\bGT\d",
+            r"S[235]M-\d", r"S5M\b", r"S8M\b", r"AT[510]\b",
+        ],
+        "negative": ["皮带轮 V 带", "三角带轮"],
+        "weight": 0.95,
+    },
+    "pneumatic_cylinder": {
+        "positive": [
+            "气缸", "笔形气缸", "薄型气缸", "导杆气缸", "无杆气缸",
+            "三轴气缸", "夹爪气缸", "旋转气缸",
+            "pneumatic cylinder", "air cylinder",
+            r"\bSC\d", r"\bSI\d", r"\bCDQ", r"\bCQ2", r"\bMGP",
+            r"\bCJ2", r"\bMHZ", r"\bCY1",
+        ],
+        "negative": ["液压缸", "hydraulic"],
+        "weight": 1.0,
+    },
+    "encoder": {
+        "positive": [
+            "编码器", "光电编码器", "磁电编码器", "增量编码器",
+            "绝对值编码器", "拉线编码器", "光栅尺",
+            "encoder", "rotary encoder", "linear scale",
+            r"\bE6B2", r"\bE6C", r"\bRENISHAW", r"\bROD\d",
+            r"\bROC\d", r"\bECN\d", r"\bEQI\d",
+        ],
+        "negative": ["编码线", "条形码"],
+        "weight": 0.95,
+    },
+    "proximity_sensor": {
+        "positive": [
+            "接近开关", "接近传感器", "光电开关", "光电传感器",
+            "光电对射", "光电反射", "槽型光电", "电感传感器",
+            "电容传感器", "磁性开关",
+            "proximity sensor", "photoelectric", "photo sensor",
+            r"\bE2E\b", r"\bE2EM\b", r"\bE3F\b", r"\bE3Z\b",
+            r"\bM(?:8|12|18|30)\s*接近",
+        ],
+        # exclude limit switches & temperature sensors which look superficially similar
+        "negative": ["行程开关", "限位开关", "温度传感器", "压力传感器", "encoder"],
+        "weight": 0.95,
+    },
+    "gearbox": {
+        "positive": [
+            "减速机", "减速器", "行星减速", "谐波减速", "RV 减速",
+            "蜗轮蜗杆减速", "斜齿减速", "摆线针轮减速", "齿轮箱",
+            "gearbox", "gear reducer", "planetary gearbox",
+            "harmonic drive",
+            r"\bAB\d", r"\bAPEX\b", r"\bPLE\d", r"\bPGL\d",
+        ],
+        "negative": ["增速机", "变速箱(汽车)"],
+        "weight": 1.0,
+    },
 }
 
 
@@ -110,8 +166,15 @@ def classify(
         )
         if hits == 0:
             continue
-        # Score = (hits / total_positives) * weight, capped at 1
-        score = min(1.0, (hits / max(1, len(rules["positive"])) * 4) * rules["weight"])
+        # Score = bumpy curve based on # of distinct keyword hits, NOT ratio
+        # to total. Earlier ratio-based formula penalised categories with
+        # large keyword lists (proximity_sensor has 16) — a real "接近开关"
+        # match scored only 0.21 because hits/16 * 4 = 0.25 * 0.95.
+        # New: 1 hit → 0.35, 2 hits → 0.65, 3+ hits → 0.85, capped at 1.0,
+        # then multiplied by category weight.
+        per_hit = [0.35, 0.65, 0.85, 0.95, 1.0]
+        base = per_hit[min(hits - 1, len(per_hit) - 1)]
+        score = min(1.0, base * rules["weight"])
         if score > best_score:
             best_score = score
             best_id = cat_id
