@@ -1,7 +1,89 @@
 'use client'
-import { useState } from 'react'
-import type { BOMNode } from '@/lib/api'
-import { chatStream } from '@/lib/api'
+import { useEffect, useState } from 'react'
+import type { BOMNode, BrandRecommendation } from '@/lib/api'
+import { chatStream, recommendBrands } from '@/lib/api'
+
+// Brand recommendations strip — shows up to ~5 brands, badged by trust
+// (★★ private / ★ shared-by-you / · community). Falls back to the
+// category's bundled common_brands list if KB is empty for this category.
+const TRUST_BADGE: Record<string, { label: string; color: string }> = {
+  private: { label: '★★', color: '#15803d' },
+  'shared-by-you': { label: '★', color: '#0369a1' },
+  community: { label: '·', color: '#6b7280' },
+}
+function BrandStrip({
+  brands,
+  fallback,
+  loading,
+}: {
+  brands: BrandRecommendation[]
+  fallback: string[]
+  loading: boolean
+}) {
+  if (loading) {
+    return (
+      <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 6 }}>
+        正在拉取品牌推荐…
+      </div>
+    )
+  }
+  const hasKb = brands.length > 0
+  const fb = fallback.slice(0, 5)
+  return (
+    <div style={{ marginBottom: 6, lineHeight: 1.6 }}>
+      <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 2 }}>
+        {hasKb ? '推荐品牌（私有库优先）：' : '通用参考品牌：'}
+      </div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {hasKb &&
+          brands.slice(0, 5).map((b) => {
+            const tag = TRUST_BADGE[b.trust] || TRUST_BADGE.community
+            return (
+              <span
+                key={b.id}
+                title={[b.region, b.price_tier, b.notes].filter(Boolean).join(' · ')}
+                style={{
+                  background: '#fff',
+                  border: '1px solid #bfdbfe',
+                  borderRadius: 4,
+                  padding: '2px 6px',
+                  fontSize: 11,
+                  color: '#1f2937',
+                }}
+              >
+                <span
+                  style={{
+                    color: tag.color,
+                    fontWeight: 600,
+                    marginRight: 4,
+                  }}
+                >
+                  {tag.label}
+                </span>
+                {b.name}
+              </span>
+            )
+          })}
+        {!hasKb &&
+          fb.map((name) => (
+            <span
+              key={name}
+              style={{
+                background: '#fff',
+                border: '1px dashed #d1d5db',
+                borderRadius: 4,
+                padding: '2px 6px',
+                fontSize: 11,
+                color: '#6b7280',
+              }}
+            >
+              {name}
+            </span>
+          ))}
+      </div>
+    </div>
+  )
+}
 
 // Pinned card showing the currently-selected node, plus 4 quick prompts
 // that pre-fill the input box (don't auto-send — user can edit before
@@ -18,6 +100,35 @@ function SelectionContextCard({
 }) {
   const ref = node.part_name || node.part_number || node.id.slice(0, 8)
   const specEntries = Object.entries(node.spec || {}).slice(0, 4)
+
+  // Auto-fetch brand recommendations whenever the selected node is classified.
+  // Avoids the user having to ask "推荐几个品牌" each time — the answer is
+  // already there when they look at the card.
+  const [brands, setBrands] = useState<BrandRecommendation[]>([])
+  const [fallbackBrands, setFallbackBrands] = useState<string[]>([])
+  const [loadingBrands, setLoadingBrands] = useState(false)
+  useEffect(() => {
+    if (!node.category_id) {
+      setBrands([])
+      setFallbackBrands([])
+      return
+    }
+    const ctrl = new AbortController()
+    setLoadingBrands(true)
+    recommendBrands(node.category_id, ctrl.signal)
+      .then((r) => {
+        setBrands(r.recommendations || [])
+        setFallbackBrands(r.fallback_brands || [])
+      })
+      .catch((ex) => {
+        if (ex?.name !== 'AbortError') {
+          // eslint-disable-next-line no-console
+          console.warn('[SelectionContextCard] recommendBrands failed', ex)
+        }
+      })
+      .finally(() => setLoadingBrands(false))
+    return () => ctrl.abort()
+  }, [node.category_id, node.id])
   const prompts: Array<{ label: string; text: string }> = []
 
   if (!node.category_id) {
@@ -103,6 +214,13 @@ function SelectionContextCard({
             </span>
           ))}
         </div>
+      )}
+      {node.category_id && (
+        <BrandStrip
+          brands={brands}
+          fallback={fallbackBrands}
+          loading={loadingBrands}
+        />
       )}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {prompts.map((p) => (

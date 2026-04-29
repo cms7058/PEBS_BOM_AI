@@ -69,6 +69,38 @@ export async function getBOM(id: string): Promise<BOM> {
   return res.json()
 }
 
+export interface BrandRecommendation {
+  id: string
+  name: string
+  url: string | null
+  region: string | null
+  categories: string[]
+  price_tier: string | null
+  typical_lead_time: string | null
+  notes: string | null
+  visibility: 'private' | 'shared'
+  upvotes: number
+  /** "private" | "shared-by-you" | "community" */
+  trust: string
+}
+
+export interface BrandRecommendResult {
+  category_id: string
+  category_name: string
+  recommendations: BrandRecommendation[]
+  fallback_brands: string[]
+}
+
+export async function recommendBrands(
+  categoryId: string,
+  signal?: AbortSignal,
+): Promise<BrandRecommendResult> {
+  const url = `${API_BASE}/brands/recommend?category_id=${encodeURIComponent(categoryId)}`
+  const res = await fetch(url, { cache: 'no-store', signal })
+  if (!res.ok) throw new Error(`brands/recommend failed: ${res.status}`)
+  return res.json()
+}
+
 export function exportUrl(bomId: string): string {
   return `${API_BASE}/export/${bomId}.xlsx`
 }
