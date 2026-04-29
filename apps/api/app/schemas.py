@@ -27,6 +27,16 @@ class BOMNodeOut(BaseModel):
     category_name: str | None = None
     spec: dict[str, Any] = Field(default_factory=dict)
 
+    # MBOM scaffolding — null on all current data; populated only when the
+    # MBOM module is built (post 30 paying PBOM customers, see business
+    # analysis). Surfaced in API now so future frontend features can read
+    # them without a schema change.
+    operation_seq: int | None = None
+    operation_desc: str | None = None
+    fixture_ref: str | None = None
+    consumed_by_op: int | None = None
+    standard_time_min: float | None = None
+
     class Config:
         from_attributes = True
 

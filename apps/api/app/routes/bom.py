@@ -296,6 +296,11 @@ _FIELD_LABELS = {
     "style": "样式",
     FIELD_CATEGORY: "类目",
     FIELD_SPEC: "规格参数",
+    "operation_seq": "工序号",
+    "operation_desc": "工序说明",
+    "fixture_ref": "工装编号",
+    "consumed_by_op": "所属工序",
+    "standard_time_min": "标准工时(min)",
     FIELD_CREATE: "新增",
     FIELD_DELETE: "删除",
 }

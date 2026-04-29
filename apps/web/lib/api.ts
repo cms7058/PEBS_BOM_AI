@@ -22,6 +22,13 @@ export interface BOMNode {
   category_id: string | null
   category_name: string | null
   spec: Record<string, unknown>
+  // MBOM scaffolding (all nullable; not populated until the MBOM module
+  // ships in a future release — see business analysis docs).
+  operation_seq: number | null
+  operation_desc: string | null
+  fixture_ref: string | null
+  consumed_by_op: number | null
+  standard_time_min: number | null
 }
 
 export interface BOM {

@@ -111,6 +111,36 @@ class BOMNode(Base):
 
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
 
+    # ─── MBOM scaffolding ────────────────────────────────────────────────
+    # Today's product is PBOM (Production / Planning BOM) — what the BOM
+    # contains and where it's sourced. MBOM (Manufacturing BOM) is the next
+    # logical expansion: same parts viewed by ASSEMBLY OPERATION SEQUENCE,
+    # with fixtures/jigs, standard time, and consumables-per-operation.
+    #
+    # We're not building MBOM features yet (out of scope until ≥ 30 paying
+    # PBOM customers — see business analysis). But adding nullable columns
+    # now means future MBOM features land without a schema migration on
+    # production customer data.
+    #
+    # Semantics when these are populated (post-MBOM-launch):
+    #   · operation_seq      this row IS an assembly operation step
+    #                        (e.g. 10, 20, 30 — same convention as ERPs)
+    #   · operation_desc     human description of what happens at this step
+    #                        (e.g. "把气缸装到底板上，扭矩 8 N·m")
+    #   · fixture_ref        jig/fixture used (FK to fixture lib later;
+    #                        free text "JIG-001" for now)
+    #   · consumed_by_op     this row is a consumable / sub-part used by
+    #                        another row whose operation_seq matches
+    #   · standard_time_min  rated cycle time for the operation in minutes
+    #
+    # All null until a customer buys the MBOM module. Backwards compatible
+    # with every existing API call — current PBOM serializers ignore them.
+    operation_seq: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    operation_desc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fixture_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    consumed_by_op: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    standard_time_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     bom: Mapped[BOM] = relationship(back_populates="nodes")
     category: Mapped["ComponentCategory | None"] = relationship(lazy="joined")
 
