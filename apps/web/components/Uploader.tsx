@@ -12,10 +12,12 @@ export default function Uploader({ mode = 'spreadsheet' }: { mode?: Mode }) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [fileName, setFileName] = useState('未选择任何文件')
 
   async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
+    setFileName(file.name)
     setBusy(true)
     setErr(null)
     try {
@@ -40,8 +42,12 @@ export default function Uploader({ mode = 'spreadsheet' }: { mode?: Mode }) {
       : '正在解析并规范化 (LLM 调用中)...'
 
   return (
-    <div>
-      <input type="file" accept={accept} onChange={onPick} disabled={busy} />
+    <div className="upload-control">
+      <label className="upload-button">
+        选择文件
+        <input type="file" accept={accept} onChange={onPick} disabled={busy} />
+      </label>
+      <span className="upload-name">{fileName}</span>
       {busy && <p style={{ color: '#1677ff' }}>{busyMsg}</p>}
       {err && <p style={{ color: '#d93025' }}>错误: {err}</p>}
     </div>

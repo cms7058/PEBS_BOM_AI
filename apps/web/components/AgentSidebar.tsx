@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import type { BOMNode, BrandRecommendation, ModelOption } from '@/lib/api'
 import { chatStream, listModels, recommendBrands } from '@/lib/api'
 
-const MODEL_STORAGE_KEY = 'agent.model'
+const MODEL_STORAGE_KEY = 'agent.model.v2'
 
 // Brand recommendations strip — shows up to ~5 brands, badged by trust
 // (★★ private / ★ shared-by-you / · community). Falls back to the
@@ -403,7 +403,7 @@ export default function AgentSidebar({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div className="agent-sidebar" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Model picker — sits above the busy bar so it's always visible.
           Disabled while a request is in flight so users don't switch models
           mid-stream and confuse history. */}

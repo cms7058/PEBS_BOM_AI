@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { BOM } from '@/lib/api'
-import { exportUrl, getBOM } from '@/lib/api'
+import { createNode, deleteNode, exportUrl, getBOM, getUserName, setUserName } from '@/lib/api'
 import BOMTable from './BOMTable'
 import BOMGraph from './BOMGraph'
 import AgentSidebar from './AgentSidebar'
@@ -27,6 +27,7 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
   // imperatively-managed) fully remount with the fresh data — no risk of
   // a stale internal cache surviving the prop change.
   const [refreshKey, setRefreshKey] = useState(0)
+  const [userName, setUserNameState] = useState('anonymous')
   // Cross-pane selection: clicking a node in the graph or a row in the
   // table sets this; the agent sidebar reads it to pin context + show
   // quick prompts targeting that node.
@@ -54,10 +55,20 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
       if (!Number.isNaN(v) && v >= MIN_RATIO && v <= MAX_RATIO) setTopRatio(v)
       const a = parseFloat(localStorage.getItem(AGENT_SPLIT_KEY) || '')
       if (!Number.isNaN(a) && a >= AGENT_MIN && a <= AGENT_MAX) setAgentRatio(a)
+      setUserNameState(getUserName())
     } catch {
       /* ignore */
     }
   }, [])
+
+  const promptUserName = useCallback(() => {
+    if (typeof window === 'undefined') return
+    const next = window.prompt('请输入你的用户名（用于编辑历史记录）：', userName)
+    if (next === null) return
+    const trimmed = next.trim() || 'anonymous'
+    setUserName(trimmed)
+    setUserNameState(trimmed)
+  }, [userName])
 
   // Persist on change (cheap; mousemove → setState → effect).
   useEffect(() => {
@@ -90,6 +101,70 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
       setReloading(false)
     }
   }, [initial.id])
+
+  const countDescendants = useCallback((nodeId: string): number => {
+    const childrenByParent = new Map<string, string[]>()
+    for (const n of bom.nodes) {
+      if (!n.parent_id) continue
+      const arr = childrenByParent.get(n.parent_id) || []
+      arr.push(n.id)
+      childrenByParent.set(n.parent_id, arr)
+    }
+    let count = 0
+    const stack = [...(childrenByParent.get(nodeId) || [])]
+    while (stack.length > 0) {
+      const id = stack.pop()!
+      count += 1
+      stack.push(...(childrenByParent.get(id) || []))
+    }
+    return count
+  }, [bom.nodes])
+
+  const handleGraphAddChild = useCallback(async (parentId: string) => {
+    const parent = bom.nodes.find((n) => n.id === parentId)
+    if (!parent) return
+    const name = window.prompt(`在「${parent.part_name}」下新增子节点`, '新子节点')
+    if (name === null) return
+    const partName = name.trim() || '新子节点'
+    setReloading(true)
+    try {
+      await createNode(bom.id, {
+        parent_id: parentId,
+        part_name: partName,
+        quantity: 1,
+        uom: 'EA',
+      })
+      await reload()
+    } catch (ex) {
+      // eslint-disable-next-line no-console
+      console.error('[BOMWorkspace] add child failed', ex)
+      window.alert('新增子节点失败，请稍后重试。')
+    } finally {
+      setReloading(false)
+    }
+  }, [bom.id, bom.nodes, reload])
+
+  const handleGraphDeleteNode = useCallback(async (nodeId: string) => {
+    const node = bom.nodes.find((n) => n.id === nodeId)
+    if (!node) return
+    const descendants = countDescendants(nodeId)
+    const message = descendants > 0
+      ? `删除「${node.part_name}」及其 ${descendants} 个子节点？`
+      : `删除「${node.part_name}」？`
+    if (!window.confirm(message)) return
+    setReloading(true)
+    try {
+      await deleteNode(bom.id, nodeId, descendants > 0)
+      if (selectedId === nodeId) setSelectedId(null)
+      await reload()
+    } catch (ex) {
+      // eslint-disable-next-line no-console
+      console.error('[BOMWorkspace] delete node failed', ex)
+      window.alert('删除节点失败，请稍后重试。')
+    } finally {
+      setReloading(false)
+    }
+  }, [bom.id, bom.nodes, countDescendants, reload, selectedId])
 
   // Drag: translate mouse Y inside .bom-main into a 0..1 ratio.
   const onMouseDownSplitter = useCallback((e: React.MouseEvent) => {
@@ -158,17 +233,28 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
   const mainFlexStyle = { flex: '1 1 0', minWidth: 0 } as const
 
   return (
-    <>
-      <div className="topbar">
-        <h1>
-          <Link href="/" style={{ color: '#1f2329' }}>PEBS BOM</Link>
-          <span style={{ color: '#8b949e', fontWeight: 400, marginLeft: 12, fontSize: 14 }}>
+    <div className="bom-workspace-shell">
+      <div className="topbar bom-topbar">
+        <div className="workspace-brand">
+          <Link href="/" className="brand-mark small">
+            <span className="brand-cube" />
+            <span>PEBS BOM</span>
+          </Link>
+          <span className="bom-title">
             / {bom.name} · {bom.nodes.length} 节点
-            {reloading && <span style={{ marginLeft: 8, color: '#1677ff' }}>同步中...</span>}
+            {reloading && <span className="sync-chip">同步中...</span>}
           </span>
-        </h1>
-        <div>
-          <a className="btn btn-primary" href={exportUrl(bom.id)}>导出 xlsx</a>
+        </div>
+        <div className="workspace-actions">
+          <button
+            type="button"
+            className="workspace-user"
+            onClick={promptUserName}
+            title="点击修改用户名（保存到本地，用于编辑历史）"
+          >
+            <span className="user-dot">♙</span>
+            <span>{userName}</span>
+          </button>
         </div>
       </div>
       <div className="bom-page" ref={pageRef}>
@@ -184,6 +270,8 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
                 nodes={bom.nodes}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
+                onAddChild={handleGraphAddChild}
+                onDeleteNode={handleGraphDeleteNode}
               />
             </div>
           </div>
@@ -205,6 +293,7 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
                 onChanged={reload}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
+                exportHref={exportUrl(bom.id)}
               />
             </div>
           </div>
@@ -218,7 +307,7 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
           onDoubleClick={() => setAgentRatio(AGENT_DEFAULT)}
         />
         <div className="panel" style={agentStyle}>
-          <div className="panel-header">智能体对话 (MiniMax M2.7)</div>
+          <div className="panel-header">智能体对话</div>
           <div className="panel-body">
             <AgentSidebar
               bomId={bom.id}
@@ -238,6 +327,6 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
           onSaved={reload}
         />
       )}
-    </>
+    </div>
   )
 }

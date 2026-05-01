@@ -124,4 +124,5 @@ deploy/             init.sql (Postgres)
 - [02-数据获取策略.md](docs/02-数据获取策略.md) — 米思米/震坤行 API 拒绝后的备选路径
 - [03-产品架构与下一步.md](docs/03-产品架构与下一步.md) — 四层架构、PEBS_BOM 现状定位、立即行动清单
 - [04-SKU智能映射设计.md](docs/04-SKU智能映射设计.md) — Layer 1 第一个补齐项的设计说明
+- [07-智能体开发进展.md](docs/07-智能体开发进展.md) — 当前已完成 / 进行中 / 未完成状态整理
 - [conversations/](docs/conversations/) — 关键讨论的原始对话记录

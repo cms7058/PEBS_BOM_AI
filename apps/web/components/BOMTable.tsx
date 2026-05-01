@@ -3,7 +3,7 @@ import { AgGridReact } from 'ag-grid-react'
 import 'ag-grid-community/styles/ag-grid.css'
 import 'ag-grid-community/styles/ag-theme-quartz.css'
 import type { BOMNode } from '@/lib/api'
-import { getUserName, patchNode, setUserName } from '@/lib/api'
+import { patchNode } from '@/lib/api'
 import { useEffect, useMemo, useState } from 'react'
 import EditHistoryModal from './EditHistoryModal'
 
@@ -37,11 +37,13 @@ interface Row extends BOMNode {
 }
 
 function buildVisibleRows(nodes: BOMNode[], expanded: Set<string>): Row[] {
+  const ids = new Set(nodes.map((n) => n.id))
   const childrenOf = new Map<string | null, BOMNode[]>()
   for (const n of nodes) {
-    const arr = childrenOf.get(n.parent_id) || []
+    const parentId = n.parent_id && ids.has(n.parent_id) ? n.parent_id : null
+    const arr = childrenOf.get(parentId) || []
     arr.push(n)
-    childrenOf.set(n.parent_id, arr)
+    childrenOf.set(parentId, arr)
   }
   for (const arr of childrenOf.values()) arr.sort((a, b) => a.sort_order - b.sort_order)
 
@@ -66,15 +68,21 @@ function buildVisibleRows(nodes: BOMNode[], expanded: Set<string>): Row[] {
     }
   }
 
-  // Top row of the tree = strictly L0 (level === 0). Collapsing all therefore
-  // leaves *only* L0 parts visible, regardless of whether some non-L0 node
-  // accidentally has parent_id === null.
-  const roots = nodes
-    .filter((n) => n.level === 0)
-    .sort((a, b) => a.sort_order - b.sort_order)
+  // Match BOMGraph's root rule: a root is any node with no resolvable parent.
+  // This keeps older imported BOMs consistent even if level and parent_id drift.
+  const roots = (childrenOf.get(null) || []).slice().sort((a, b) => a.sort_order - b.sort_order)
   roots.forEach((r, i) => visit(r, 0, i === roots.length - 1, []))
 
   return rows
+}
+
+function getExpandableIds(nodes: BOMNode[]): Set<string> {
+  const ids = new Set(nodes.map((n) => n.id))
+  const expandable = new Set<string>()
+  for (const n of nodes) {
+    if (n.parent_id && ids.has(n.parent_id)) expandable.add(n.parent_id)
+  }
+  return expandable
 }
 
 export default function BOMTable({
@@ -83,41 +91,30 @@ export default function BOMTable({
   onChanged,
   selectedId,
   onSelect,
+  exportHref,
 }: {
   nodes: BOMNode[]
   bomId?: string
   onChanged?: () => void
   selectedId?: string | null
   onSelect?: (id: string | null) => void
+  exportHref?: string
 }) {
-  // Default: all collapsed — only L0 (top-level) nodes visible. The user
-  // expands branches manually with the carets, or with 全部展开 below.
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  // Default: expanded, matching the graph's initial full-structure view.
+  const [expanded, setExpanded] = useState<Set<string>>(() => getExpandableIds(nodes))
 
   // Pending edit awaiting user confirmation. Null = no dialog.
   const [pending, setPending] = useState<PendingEdit | null>(null)
   const [saving, setSaving] = useState(false)
   const [errMsg, setErrMsg] = useState<string | null>(null)
 
-  // History modal + cached user name (rendered as a small chip in the toolbar).
+  // History modal for audit trail.
   const [historyOpen, setHistoryOpen] = useState(false)
-  const [userName, setUserNameState] = useState<string>('anonymous')
-  useEffect(() => {
-    setUserNameState(getUserName())
-  }, [])
-  const promptUserName = () => {
-    if (typeof window === 'undefined') return
-    const next = window.prompt('请输入你的用户名（用于编辑历史记录）：', userName)
-    if (next === null) return
-    const trimmed = next.trim() || 'anonymous'
-    setUserName(trimmed)
-    setUserNameState(trimmed)
-  }
 
-  // When the BOM reloads (e.g. after applying a hierarchy rule), reset back
-  // to the collapsed L0-only view.
+  // When the BOM reloads (e.g. after applying a hierarchy rule), reset to the
+  // graph's default full-structure view.
   useEffect(() => {
-    setExpanded(new Set())
+    setExpanded(getExpandableIds(nodes))
   }, [nodes])
 
   const rowData = useMemo(() => buildVisibleRows(nodes, expanded), [nodes, expanded])
@@ -275,9 +272,7 @@ export default function BOMTable({
         <span>共 {nodes.length} 个节点 · 显示 {rowData.length} 行</span>
         <a
           onClick={() => {
-            const all = new Set<string>()
-            for (const n of nodes) if (n.parent_id) all.add(n.parent_id)
-            setExpanded(all)
+            setExpanded(getExpandableIds(nodes))
           }}
           style={{ cursor: 'pointer', color: '#1677ff' }}
         >
@@ -290,13 +285,7 @@ export default function BOMTable({
           全部折叠
         </a>
         <span style={{ flex: 1 }} />
-        <a
-          onClick={promptUserName}
-          title="点击修改用户名（保存到本地，用于编辑历史）"
-          style={{ cursor: 'pointer', color: '#374151' }}
-        >
-          👤 {userName}
-        </a>
+        {exportHref && <a className="btn btn-primary table-export-btn" href={exportHref}>导出 xlsx</a>}
         {bomId && (
           <a
             onClick={() => setHistoryOpen(true)}

@@ -46,6 +46,12 @@ async def models() -> dict[str, Any]:
 
 SYSTEM_PROMPT_TEMPLATE = """你是 BOM 编辑助手，帮用户查看和编辑一个 BOM（物料清单）结构。
 
+【身份回答规则】
+用户问"你现在是什么模型"、"你是什么模型"、"用的什么模型"、"你是谁开发的"等身份/模型问题时，不要给出具体底层模型名称，必须按下面内容回答：
+我是 PEBS 开发的 AI 助手。当前在这个对话中我的角色是 **BOM 编辑助手**，专门帮你查看和编辑物料清单结构。我能正常调用所有 BOM 相关工具，随时帮你干活。需要我帮你处理这个 BOM 吗?
+
+不要自称 Claude、Anthropic、OpenAI、DeepSeek 或其它底层模型/厂商。
+
 可用工具（节点变化会实时同步到用户界面）：
 - bom_list_nodes        查看节点（回答问题前先查，避免猜测）
 - bom_add_node          新增节点或子节点
@@ -236,13 +242,6 @@ async def chat(req: AgentChatRequest, db: AsyncSession = Depends(get_db)):
     executor = BOMToolExecutor(db=db, bom_id=req.bom_id, user_name=user_name)
 
     async def event_source() -> AsyncIterator[dict]:
-        # Use .replace() not .format() — the prompt body legitimately contains
-        # JSON-style examples with `{...}` braces (e.g. attrs={"color":"#F46649"})
-        # which `.format()` would parse as fields and explode with KeyError.
-        system_prompt = SYSTEM_PROMPT_TEMPLATE.replace(
-            "{bom_summary}", _bom_summary(bom)
-        )
-
         # Conversation history: prior turns from frontend (plain text, no tool blocks).
         messages: list[ChatMessage] = [
             ChatMessage(role=m["role"], content=m["content"]) for m in req.history

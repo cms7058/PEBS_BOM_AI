@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 from urllib.parse import unquote
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
@@ -68,6 +69,21 @@ class NodePatchIn(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+class NodeCreateIn(BaseModel):
+    parent_id: str | None = None
+    part_name: str = "新子节点"
+    part_number: str | None = None
+    quantity: float = 1.0
+    uom: str = "EA"
+    material: str | None = None
+    description: str | None = None
+    supplier: str | None = None
+    unit_cost: float | None = None
+    notes: str | None = None
+
+    model_config = {"extra": "ignore"}
+
+
 @router.get("", response_model=list[BOMListItem])
 async def list_boms(db: AsyncSession = Depends(get_db)) -> list[BOMListItem]:
     q = (
@@ -88,6 +104,116 @@ async def get_bom(bom_id: str, db: AsyncSession = Depends(get_db)) -> BOMOut:
         raise HTTPException(404, "BOM not found")
     nodes = [BOMNodeOut.model_validate(n) for n in sorted(bom.nodes, key=lambda x: x.sort_order)]
     return BOMOut(id=bom.id, name=bom.name, source_file_id=bom.source_file_id, nodes=nodes)
+
+
+@router.post("/{bom_id}/nodes", response_model=BOMNodeOut)
+async def create_node(
+    bom_id: str,
+    body: NodeCreateIn,
+    db: AsyncSession = Depends(get_db),
+    x_user_name: str | None = Header(default=None, alias="X-User-Name"),
+) -> BOMNodeOut:
+    """Create a BOM node from direct UI actions such as graph buttons."""
+    q = select(BOM).where(BOM.id == bom_id).options(selectinload(BOM.nodes))
+    bom = (await db.execute(q)).scalar_one_or_none()
+    if not bom:
+        raise HTTPException(404, "BOM not found")
+
+    parent: BOMNode | None = None
+    if body.parent_id:
+        parent = next((n for n in bom.nodes if n.id == body.parent_id), None)
+        if parent is None:
+            raise HTTPException(404, "Parent node not found")
+
+    name = (body.part_name or "").strip() or "新子节点"
+    max_sort = max((n.sort_order for n in bom.nodes), default=-1)
+    node = BOMNode(
+        id=str(uuid4()),
+        bom_id=bom.id,
+        parent_id=body.parent_id,
+        level=(parent.level + 1) if parent else 0,
+        part_name=name,
+        part_number=body.part_number,
+        quantity=float(body.quantity or 1),
+        uom=body.uom or "EA",
+        material=body.material,
+        description=body.description,
+        supplier=body.supplier,
+        unit_cost=body.unit_cost,
+        notes=body.notes,
+        sort_order=max_sort + 1,
+        confidence=1.0,
+    )
+    db.add(node)
+    await db.flush()
+    await record_edit(
+        db,
+        bom_id=bom.id,
+        node_id=node.id,
+        node_label=label_of(node),
+        field=FIELD_CREATE,
+        old_value=None,
+        new_value=(
+            f"{node.part_name} (level={node.level}"
+            + (f", parent={body.parent_id[:8]}" if body.parent_id else "")
+            + ")"
+        ),
+        user_name=decode_user_name(x_user_name),
+        source="graph",
+    )
+    await db.commit()
+    await db.refresh(node)
+    return BOMNodeOut.model_validate(node)
+
+
+@router.delete("/{bom_id}/nodes/{node_id}")
+async def delete_node(
+    bom_id: str,
+    node_id: str,
+    cascade: bool = False,
+    db: AsyncSession = Depends(get_db),
+    x_user_name: str | None = Header(default=None, alias="X-User-Name"),
+) -> dict[str, Any]:
+    """Delete one node, optionally including its subtree."""
+    q = select(BOM).where(BOM.id == bom_id).options(selectinload(BOM.nodes))
+    bom = (await db.execute(q)).scalar_one_or_none()
+    if not bom:
+        raise HTTPException(404, "BOM not found")
+
+    target = next((n for n in bom.nodes if n.id == node_id), None)
+    if not target:
+        raise HTTPException(404, "Node not found")
+
+    children = [n for n in bom.nodes if n.parent_id == node_id]
+    if children and not cascade:
+        raise HTTPException(400, "Node has children; pass cascade=true to delete subtree")
+
+    to_delete: list[str] = []
+    stack = [node_id]
+    while stack:
+        cur = stack.pop()
+        to_delete.append(cur)
+        stack.extend(n.id for n in bom.nodes if n.parent_id == cur)
+
+    user_name = decode_user_name(x_user_name)
+    for n in [n for n in bom.nodes if n.id in to_delete]:
+        await record_edit(
+            db,
+            bom_id=bom.id,
+            node_id=n.id,
+            node_label=label_of(n),
+            field=FIELD_DELETE,
+            old_value=f"{n.part_name} (level={n.level}, qty={n.quantity}{n.uom})",
+            new_value=None,
+            user_name=user_name,
+            source="graph",
+        )
+    for n in list(bom.nodes):
+        if n.id in to_delete:
+            await db.delete(n)
+
+    await db.commit()
+    return {"deleted": len(to_delete)}
 
 
 async def _apply_table_patch(

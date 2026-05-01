@@ -228,6 +228,46 @@ export async function patchNode(
   return res.json()
 }
 
+export async function createNode(
+  bomId: string,
+  body: {
+    parent_id?: string | null
+    part_name: string
+    part_number?: string | null
+    quantity?: number
+    uom?: string
+  },
+): Promise<BOMNode> {
+  const res = await fetch(`${API_BASE}/boms/${bomId}/nodes`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-User-Name': encodeURIComponent(getUserName()),
+    },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(`Create node failed: ${res.status} ${await res.text()}`)
+  return res.json()
+}
+
+export async function deleteNode(
+  bomId: string,
+  nodeId: string,
+  cascade = false,
+): Promise<{ deleted: number }> {
+  const res = await fetch(
+    `${API_BASE}/boms/${bomId}/nodes/${nodeId}?cascade=${cascade ? 'true' : 'false'}`,
+    {
+      method: 'DELETE',
+      headers: {
+        'X-User-Name': encodeURIComponent(getUserName()),
+      },
+    },
+  )
+  if (!res.ok) throw new Error(`Delete node failed: ${res.status} ${await res.text()}`)
+  return res.json()
+}
+
 export interface BOMEdit {
   id: string
   node_id: string

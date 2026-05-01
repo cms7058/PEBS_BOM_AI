@@ -1,5 +1,5 @@
 'use client'
-import { Rect as GRect, Text as GText } from '@antv/g'
+import { Line as GLine, Rect as GRect, Text as GText } from '@antv/g'
 import {
   Badge,
   CommonEvent,
@@ -10,13 +10,15 @@ import {
   register,
   iconfont,
 } from '@antv/g6'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { BOMNode } from '@/lib/api'
 
 interface Props {
   nodes: BOMNode[]
   selectedId?: string | null
   onSelect?: (id: string | null) => void
+  onAddChild?: (id: string) => void
+  onDeleteNode?: (id: string) => void
 }
 
 // ─── Status color palette (from fund-flow example) ────────────────────────
@@ -254,41 +256,132 @@ class BomNode extends Rect {
     ;(this as any).upsert('qty', GText, style, container)
   }
 
-  // Collapse / expand button on the right edge
-  getCollapseStyle(attributes: any) {
-    if (this.childrenData.length === 0) return false
-    const { collapsed } = attributes
-    const [width] = (this as any).getSize(attributes)
+  getActionButtonStyle(attributes: any, index: number, text: string, fill = GREY) {
+    const [width, height] = (this as any).getSize(attributes)
     return {
       backgroundFill: '#fff',
-      backgroundHeight: 16,
+      backgroundHeight: 18,
       backgroundLineWidth: 1,
-      backgroundRadius: 0,
+      backgroundRadius: 9,
       backgroundStroke: GREY,
-      backgroundWidth: 16,
+      backgroundWidth: 18,
       cursor: 'pointer',
-      fill: GREY,
-      fontSize: 16,
-      text: collapsed ? '+' : '-',
+      fill,
+      fontSize: 14,
+      text,
       textAlign: 'center',
       textBaseline: 'middle',
-      x: width / 2,
-      y: 0,
+      x: width / 2 - 50 + index * 20,
+      y: -height / 2 + 12,
     }
+  }
+
+  emitNodeAction(action: 'toggle-collapse' | 'add-child' | 'delete') {
+    const graph = (this as any).context.graph
+    ;(graph as any).emit?.('bom:node-action', { action, nodeId: this.id })
+  }
+
+  bindNodeAction(shape: any, action: 'toggle-collapse' | 'add-child' | 'delete') {
+    if (!shape || Reflect.has(shape, '__bind__')) return
+    Reflect.set(shape, '__bind__', true)
+    shape.addEventListener(CommonEvent.CLICK, (ev: any) => {
+      ev?.stopPropagation?.()
+      this.emitNodeAction(action)
+    })
+  }
+
+  // Collapse / expand button — shown only when the node has children.
+  getCollapseStyle(attributes: any) {
+    if (!this.data.childCount) return false
+    return this.getActionButtonStyle(attributes, 0, this.data.collapsed ? '▸' : '▾', '#57606a')
   }
 
   drawCollapseShape(attributes: any, container: any) {
     const collapseStyle = this.getCollapseStyle(attributes)
     const btn = (this as any).upsert('collapse', Badge, collapseStyle, container)
+    this.bindNodeAction(btn, 'toggle-collapse')
+  }
+
+  drawAddChildShape(attributes: any, container: any) {
+    if (this.id === SYNTHETIC_ROOT_ID) return
+    const btn = (this as any).upsert(
+      'addChild',
+      Badge,
+      this.getActionButtonStyle(attributes, 1, '+', COLORS.B),
+      container,
+    )
     if (btn && !Reflect.has(btn, '__bind__')) {
       Reflect.set(btn, '__bind__', true)
-      btn.addEventListener(CommonEvent.CLICK, () => {
-        const { collapsed } = (this as any).attributes
-        const graph = (this as any).context.graph
-        if (collapsed) graph.expandElement(this.id)
-        else graph.collapseElement(this.id)
+      btn.addEventListener(CommonEvent.CLICK, (ev: any) => {
+        ev?.stopPropagation?.()
+        this.emitNodeAction('add-child')
       })
     }
+  }
+
+  drawTrashIconShape(attributes: any, container: any) {
+    const [width, height] = (this as any).getSize(attributes)
+    const cx = width / 2 - 10
+    const cy = -height / 2 + 12
+    const stroke = COLORS.R
+    const common = {
+      stroke,
+      lineWidth: 1.4,
+      cursor: 'pointer',
+    }
+    const body = (this as any).upsert(
+      'deleteIconBody',
+      GRect,
+      {
+        ...common,
+        x: cx - 4.5,
+        y: cy - 1.5,
+        width: 9,
+        height: 9.5,
+        radius: 1.2,
+        fill: 'transparent',
+      },
+      container,
+    )
+    const lid = (this as any).upsert(
+      'deleteIconLid',
+      GLine,
+      { ...common, x1: cx - 6, y1: cy - 4, x2: cx + 6, y2: cy - 4 },
+      container,
+    )
+    const handle = (this as any).upsert(
+      'deleteIconHandle',
+      GLine,
+      { ...common, x1: cx - 2.2, y1: cy - 6.5, x2: cx + 2.2, y2: cy - 6.5 },
+      container,
+    )
+    const leftGroove = (this as any).upsert(
+      'deleteIconLeftGroove',
+      GLine,
+      { ...common, x1: cx - 2, y1: cy + 0.5, x2: cx - 2, y2: cy + 6 },
+      container,
+    )
+    const rightGroove = (this as any).upsert(
+      'deleteIconRightGroove',
+      GLine,
+      { ...common, x1: cx + 2, y1: cy + 0.5, x2: cx + 2, y2: cy + 6 },
+      container,
+    )
+    ;[body, lid, handle, leftGroove, rightGroove].forEach((shape) =>
+      this.bindNodeAction(shape, 'delete'),
+    )
+  }
+
+  drawDeleteShape(attributes: any, container: any) {
+    if (this.id === SYNTHETIC_ROOT_ID) return
+    const btn = (this as any).upsert(
+      'deleteNode',
+      Badge,
+      this.getActionButtonStyle(attributes, 2, '', COLORS.R),
+      container,
+    )
+    this.bindNodeAction(btn, 'delete')
+    this.drawTrashIconShape(attributes, container)
   }
 
   // Bottom progress bar — slot id "progress"
@@ -384,6 +477,8 @@ class BomNode extends Rect {
     this.drawProcessBarShape(attributes, container)
     this.drawBadgeShape(attributes, container)
     this.drawCollapseShape(attributes, container)
+    this.drawAddChildShape(attributes, container)
+    this.drawDeleteShape(attributes, container)
   }
 }
 
@@ -404,9 +499,8 @@ if (typeof document !== 'undefined' && !(document as any)[ICONFONT_FLAG]) {
 // ─── Flat BOMNode[] → G6 graph data ──────────────────────────────────────
 // We build {nodes, edges} directly instead of going through `treeToGraphData`
 // because BOM data is often a forest (e.g. STEP imports come back as 10
-// independent level-0 nodes with no parent_id), and the indented layout
-// needs a single root. Multi-root → we synthesize an invisible super-root
-// and connect all real roots to it.
+// independent level-0 nodes with no parent_id). Dagre can lay out forests, so
+// we keep the graph faithful to real BOM nodes instead of adding a fake root.
 const SYNTHETIC_ROOT_ID = '__bom_root__'
 
 function nodeData(n: BOMNode) {
@@ -439,9 +533,31 @@ function nodeData(n: BOMNode) {
   }
 }
 
-function toGraphData(nodes: BOMNode[], selectedId: string | null = null) {
+function toGraphData(
+  nodes: BOMNode[],
+  selectedId: string | null = null,
+  collapsedIds: Set<string> = new Set(),
+) {
   if (nodes.length === 0) return { nodes: [], edges: [] }
   const ids = new Set(nodes.map((n) => n.id))
+  const childrenByParent = new Map<string, BOMNode[]>()
+  for (const n of nodes) {
+    if (!n.parent_id || !ids.has(n.parent_id)) continue
+    const arr = childrenByParent.get(n.parent_id) || []
+    arr.push(n)
+    childrenByParent.set(n.parent_id, arr)
+  }
+
+  const hidden = new Set<string>()
+  const hideDescendants = (id: string) => {
+    for (const child of childrenByParent.get(id) || []) {
+      hidden.add(child.id)
+      hideDescendants(child.id)
+    }
+  }
+  for (const id of collapsedIds) hideDescendants(id)
+  const visibleNodes = nodes.filter((n) => !hidden.has(n.id))
+  const visibleIds = new Set(visibleNodes.map((n) => n.id))
 
   // BOM fields are spread at top level (not nested under `data`) because
   // BomNode reads via `context.model.getNodeLikeDatum(id)` which returns the
@@ -449,53 +565,42 @@ function toGraphData(nodes: BOMNode[], selectedId: string | null = null) {
   // We deliberately do NOT set `style.collapsed` here: with dagre layout,
   // setting collapsed on individual nodes caused G6 to hide siblings of a
   // non-collapsed parent. dagre handles forests fine without that hint.
-  const g6Nodes: any[] = nodes.map((n) => ({
+  const g6Nodes: any[] = visibleNodes.map((n) => ({
     id: n.id,
     ...nodeData(n),
     selected: selectedId === n.id,
+    childCount: childrenByParent.get(n.id)?.length || 0,
+    collapsed: collapsedIds.has(n.id),
   }))
-  const g6Edges: any[] = nodes
-    .filter((n) => n.parent_id && ids.has(n.parent_id))
+  const g6Edges: any[] = visibleNodes
+    .filter((n) => n.parent_id && visibleIds.has(n.parent_id))
     .map((n) => ({
       id: `${n.parent_id}->${n.id}`,
       source: n.parent_id!,
       target: n.id,
     }))
 
-  // Forest detection: any node with no resolvable parent is a real root.
-  const roots = nodes.filter((n) => !n.parent_id || !ids.has(n.parent_id))
-  if (roots.length > 1) {
-    g6Nodes.unshift({
-      id: SYNTHETIC_ROOT_ID,
-      partNumber: null,
-      partName: 'BOM',
-      qty: roots.length,
-      uom: '件',
-      confidence: 1,
-      material: null,
-      supplier: null,
-      unitCost: null,
-      notes: null,
-      description: null,
-    })
-    roots.forEach((r) => {
-      g6Edges.push({
-        id: `${SYNTHETIC_ROOT_ID}->${r.id}`,
-        source: SYNTHETIC_ROOT_ID,
-        target: r.id,
-      })
-    })
-  }
   return { nodes: g6Nodes, edges: g6Edges }
 }
 
-export default function BOMGraph({ nodes, selectedId, onSelect }: Props) {
+export default function BOMGraph({
+  nodes,
+  selectedId,
+  onSelect,
+  onAddChild,
+  onDeleteNode,
+}: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const graphRef = useRef<Graph | null>(null)
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(() => new Set())
   // Latest onSelect — held in a ref so the mount-once effect can still call
   // the freshest callback (props change but the graph instance persists).
   const onSelectRef = useRef(onSelect)
   useEffect(() => { onSelectRef.current = onSelect }, [onSelect])
+  const onAddChildRef = useRef(onAddChild)
+  useEffect(() => { onAddChildRef.current = onAddChild }, [onAddChild])
+  const onDeleteNodeRef = useRef(onDeleteNode)
+  useEffect(() => { onDeleteNodeRef.current = onDeleteNode }, [onDeleteNode])
   // Tracks which mount instance is current; used to ignore async work
   // (render promises) that resolve after we've already destroyed the graph.
   const aliveRef = useRef(true)
@@ -510,7 +615,7 @@ export default function BOMGraph({ nodes, selectedId, onSelect }: Props) {
     const graph = new Graph({
       container: containerRef.current,
       autoFit: 'view',
-      data: toGraphData(nodes, selectedId ?? null),
+      data: toGraphData(nodes, selectedId ?? null, collapsedIds),
       node: {
         type: 'bom-node',
         style: {
@@ -547,6 +652,20 @@ export default function BOMGraph({ nodes, selectedId, onSelect }: Props) {
       }
     })
     graph.on('canvas:click', () => onSelectRef.current?.(null))
+    graph.on('bom:node-action' as any, (evt: any) => {
+      const nodeId = evt?.nodeId
+      if (typeof nodeId !== 'string' || nodeId === SYNTHETIC_ROOT_ID) return
+      if (evt.action === 'toggle-collapse') {
+        setCollapsedIds((prev) => {
+          const next = new Set(prev)
+          if (next.has(nodeId)) next.delete(nodeId)
+          else next.add(nodeId)
+          return next
+        })
+      }
+      if (evt.action === 'add-child') onAddChildRef.current?.(nodeId)
+      if (evt.action === 'delete') onDeleteNodeRef.current?.(nodeId)
+    })
 
     // Defer render() to next frame. React 18 strict-mode does mount → unmount →
     // remount in dev; if we render() synchronously, the first mount's async
@@ -600,19 +719,21 @@ export default function BOMGraph({ nodes, selectedId, onSelect }: Props) {
     let id: number | null = requestAnimationFrame(() => {
       id = null
       if (!aliveRef.current || (graph as any).destroyed) return
-      try {
-        graph.setData(toGraphData(nodes, selectedId ?? null))
-        graph.render().catch(() => {
-          /* ignore late errors */
-        })
-      } catch {
-        /* ignore — graph likely about to unmount */
-      }
+      ;(async () => {
+        try {
+          await graph.clear()
+          if (!aliveRef.current || (graph as any).destroyed) return
+          graph.setData(toGraphData(nodes, selectedId ?? null, collapsedIds))
+          await graph.render()
+        } catch {
+          /* ignore — graph likely about to unmount */
+        }
+      })()
     })
     return () => {
       if (id !== null) cancelAnimationFrame(id)
     }
-  }, [nodes, selectedId])
+  }, [nodes, selectedId, collapsedIds])
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 }
