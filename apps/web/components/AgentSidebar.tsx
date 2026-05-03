@@ -1,7 +1,7 @@
 'use client'
-import { useEffect, useState } from 'react'
-import type { BOMNode, BrandRecommendation, ModelOption } from '@/lib/api'
-import { chatStream, listModels, recommendBrands } from '@/lib/api'
+import { useEffect, useRef, useState } from 'react'
+import type { BOMNode, BrandRecommendation, MappingStatus, ModelOption } from '@/lib/api'
+import { chatStream, getNodeMapping, listModels, recommendBrands } from '@/lib/api'
 
 const MODEL_STORAGE_KEY = 'agent.model.v2'
 
@@ -184,6 +184,17 @@ function SelectionContextCard({
             {node.category_name}
           </span>
         )}
+        <span
+          style={{
+            fontSize: 11,
+            color: node.part_id ? '#047857' : '#b45309',
+            background: node.part_id ? '#d1fae5' : '#fef3c7',
+            padding: '1px 6px',
+            borderRadius: 8,
+          }}
+        >
+          {node.part_id ? '已映射' : '未映射'}
+        </span>
         <span style={{ flex: 1 }} />
         {onClear && (
           <button
@@ -281,12 +292,69 @@ interface Msg {
   toolCalls?: ToolCallRecord[]
 }
 
+type WorkspaceView = 'bom' | 'parts'
+
+interface PendingNavigation {
+  from: WorkspaceView
+  to: WorkspaceView
+}
+
+function viewLabel(view: WorkspaceView): string {
+  return view === 'parts' ? '公司标准物料库' : 'BOM 详情页'
+}
+
+function isNegativeNavigationAnswer(text: string): boolean {
+  const normalized = text.trim().toLowerCase()
+  return /^(否|不|不用|不要|不需要|不留|不留在这里|返回|回去|退回|回上一页|返回上一页)$/.test(normalized)
+}
+
+function isPositiveNavigationAnswer(text: string): boolean {
+  const normalized = text.trim().toLowerCase()
+  return /^(是|好|好的|可以|留|停留|继续|留下|留在这里|就这里|yes|y|ok)$/.test(normalized)
+}
+
+function isReturnBomCommand(text: string): boolean {
+  return /(返回|回到|回|打开|切到).*(bom|BOM|详情|工作台)|^(bom|BOM)详情页$/.test(text)
+}
+
+function mappingPrompt(node: BOMNode, mapping: MappingStatus): string {
+  if (mapping.mapped_part) {
+    return [
+      `当前选中节点「${node.part_name}」已映射到公司标准物料：`,
+      `${mapping.mapped_part.name_standard}${mapping.mapped_part.part_number ? ` / ${mapping.mapped_part.part_number}` : ''}`,
+      '',
+      '我可以继续帮你查看历史使用、供应商、品牌或风险信息。',
+    ].join('\n')
+  }
+  const lines = [
+    `当前选中节点「${node.part_name}」还没有映射到公司标准物料库。`,
+    `节点 id：${node.id}`,
+  ]
+  if (node.part_number) lines.push(`零件号：${node.part_number}`)
+  if (mapping.suggestions.length > 0) {
+    lines.push('', '我找到了这些可能匹配的历史标准物料：')
+    mapping.suggestions.forEach((s, idx) => {
+      const p = s.part
+      lines.push(
+        `${idx + 1}. ${p.name_standard}${p.part_number ? ` / ${p.part_number}` : ''}（匹配度 ${Math.round(s.score * 100)}%，id=${p.id}，原因：${s.reason}）`,
+      )
+    })
+    lines.push('', '你可以直接回复“选第一个”“用第二个”“新建一个”或“先跳过”。')
+  } else {
+    lines.push('', '暂时没有找到历史候选。你可以回复“新建一个”，我会把它保存为新的公司标准物料；也可以回复“先跳过”。')
+  }
+  return lines.join('\n')
+}
+
 export default function AgentSidebar({
   bomId,
   onBomUpdated,
   selectedNode,
   onClearSelection,
   onOpenConfigurator,
+  onOpenParts,
+  onOpenBom,
+  currentView = 'bom',
 }: {
   bomId: string
   onBomUpdated?: () => void
@@ -298,10 +366,15 @@ export default function AgentSidebar({
   // Called when the user clicks "🛠 选型" on the context card. Workspace
   // owns the modal so it can refresh the BOM after save.
   onOpenConfigurator?: () => void
+  onOpenParts?: () => void
+  onOpenBom?: () => void
+  currentView?: WorkspaceView
 }) {
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
+  const [pendingNavigation, setPendingNavigation] = useState<PendingNavigation | null>(null)
+  const promptedMappingNodeRef = useRef<string | null>(null)
   // Live phase string from backend, e.g. "思考中…", "执行工具 bom_update_node…"
   // Stays visible until the request completes so the user always knows the
   // agent is still working (fixes "no feedback" complaint).
@@ -338,10 +411,70 @@ export default function AgentSidebar({
     }
   }, [selectedModel])
 
+  useEffect(() => {
+    if (!selectedNode) return
+    const key = `${selectedNode.id}:${selectedNode.part_id || selectedNode.mapping_status}`
+    if (promptedMappingNodeRef.current === key) return
+    const ctrl = new AbortController()
+    getNodeMapping(bomId, selectedNode.id, ctrl.signal)
+      .then((mapping) => {
+        if (ctrl.signal.aborted) return
+        promptedMappingNodeRef.current = key
+        if (mapping.status === 'confirmed' && mapping.mapped_part) return
+        setMsgs((prev) => {
+          const last = prev[prev.length - 1]
+          const content = mappingPrompt(selectedNode, mapping)
+          if (last?.role === 'assistant' && last.content === content) return prev
+          return [...prev, { role: 'assistant', content }]
+        })
+      })
+      .catch((ex) => {
+        if (ex?.name !== 'AbortError') {
+          // eslint-disable-next-line no-console
+          console.warn('[AgentSidebar] getNodeMapping failed', ex)
+        }
+      })
+    return () => ctrl.abort()
+  }, [bomId, selectedNode])
+
   async function send() {
     const text = input.trim()
     if (!text || busy) return
     setInput('')
+
+    const appendLocalReply = (content: string) => {
+      setMsgs((prev) => [
+        ...prev,
+        { role: 'user', content: text },
+        { role: 'assistant', content },
+      ])
+    }
+
+    const goToView = (view: WorkspaceView) => {
+      if (view === 'parts') onOpenParts?.()
+      else onOpenBom?.()
+    }
+
+    if (isReturnBomCommand(text)) {
+      goToView('bom')
+      setPendingNavigation(null)
+      appendLocalReply('好的，已返回 BOM 详情页。')
+      return
+    }
+
+    if (pendingNavigation) {
+      if (isNegativeNavigationAnswer(text)) {
+        goToView(pendingNavigation.from)
+        appendLocalReply(`好的，已返回${viewLabel(pendingNavigation.from)}。`)
+        setPendingNavigation(null)
+        return
+      }
+      if (isPositiveNavigationAnswer(text)) {
+        appendLocalReply(`好的，继续停留在${viewLabel(pendingNavigation.to)}。`)
+        setPendingNavigation(null)
+        return
+      }
+    }
 
     const history = msgs.map((m) => ({ role: m.role, content: m.content }))
     setMsgs((prev) => [
@@ -367,6 +500,18 @@ export default function AgentSidebar({
           setPhase('回复生成中…')
           updateLast((m) => ({ ...m, content: m.content + evt.text }))
         } else if (evt.type === 'tool_call') {
+          if (evt.name === 'part_list' && evt.ok && currentView !== 'parts') {
+            const from = currentView
+            onOpenParts?.()
+            setPendingNavigation({ from, to: 'parts' })
+            updateLast((m) => ({
+              ...m,
+              content: [
+                m.content,
+                `已为你打开「${viewLabel('parts')}」列表页。是否停留在此页面？回复“否”我会返回${viewLabel(from)}；也可以直接说“返回 BOM 详情页”。`,
+              ].filter(Boolean).join('\n\n'),
+            }))
+          }
           setPhase(
             evt.ok
               ? `工具 ${evt.name} 已完成${evt.mutated ? '（已修改 BOM）' : ''}`
@@ -503,13 +648,11 @@ export default function AgentSidebar({
           </p>
         )}
         {msgs.map((m, i) => (
-          <div key={i} style={{ marginBottom: 14 }}>
+          <div key={i} className={`chat-row ${m.role === 'user' ? 'user' : 'assistant'}`}>
+            {m.role === 'assistant' && <div className="chat-avatar assistant">AI</div>}
+            <div className="chat-bubble">
             <div
-              style={{
-                fontSize: 12,
-                color: m.role === 'user' ? '#1677ff' : '#10b981',
-                marginBottom: 4,
-              }}
+              className="chat-name"
             >
               {m.role === 'user' ? '你' : 'Assistant'}
             </div>
@@ -518,15 +661,7 @@ export default function AgentSidebar({
                 {m.toolCalls.map((tc, j) => (
                   <div
                     key={j}
-                    style={{
-                      fontSize: 12,
-                      padding: '4px 8px',
-                      margin: '2px 0',
-                      background: tc.ok ? (tc.mutated ? '#ecfdf3' : '#eff6ff') : '#fef2f2',
-                      border: `1px solid ${tc.ok ? (tc.mutated ? '#10b981' : '#60a5fa') : '#ef4444'}`,
-                      borderRadius: 4,
-                      color: '#1f2329',
-                    }}
+                    className={`tool-chip ${tc.ok ? (tc.mutated ? 'mutated' : 'ok') : 'failed'}`}
                   >
                     <span style={{ fontFamily: 'monospace', color: '#6b7280' }}>
                       {tc.mutated ? '✎ ' : '· '}{tc.name}
@@ -539,6 +674,8 @@ export default function AgentSidebar({
             <div style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.6 }}>
               {m.content || (busy && i === msgs.length - 1 ? '...' : '')}
             </div>
+            </div>
+            {m.role === 'user' && <div className="chat-avatar user">♙</div>}
           </div>
         ))}
       </div>

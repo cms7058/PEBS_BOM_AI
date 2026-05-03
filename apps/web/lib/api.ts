@@ -22,6 +22,8 @@ export interface BOMNode {
   category_id: string | null
   category_name: string | null
   spec: Record<string, unknown>
+  part_id: string | null
+  mapping_status: 'unmapped' | 'suggested' | 'confirmed' | 'rejected'
   // MBOM scaffolding (all nullable; not populated until the MBOM module
   // ships in a future release — see business analysis docs).
   operation_seq: number | null
@@ -98,6 +100,101 @@ export interface BrandRecommendResult {
   fallback_brands: string[]
 }
 
+export interface Part {
+  id: string
+  sku_internal: string | null
+  name_standard: string
+  part_number: string | null
+  category_id: string | null
+  category_name: string | null
+  brand: string | null
+  spec: Record<string, unknown>
+  notes: string | null
+}
+
+export interface PartSuggestion {
+  part: Part
+  score: number
+  reason: string
+}
+
+export interface MappingStatus {
+  node_id: string
+  status: 'unmapped' | 'suggested' | 'confirmed' | 'rejected'
+  mapped_part: Part | null
+  suggestions: PartSuggestion[]
+}
+
+export async function getNodeMapping(
+  bomId: string,
+  nodeId: string,
+  signal?: AbortSignal,
+): Promise<MappingStatus> {
+  const res = await fetch(`${API_BASE}/boms/${bomId}/nodes/${nodeId}/mapping`, {
+    cache: 'no-store',
+    signal,
+  })
+  if (!res.ok) throw new Error(`mapping failed: ${res.status}`)
+  return res.json()
+}
+
+export async function listParts(query = '', signal?: AbortSignal): Promise<{ items: Part[]; total: number }> {
+  const params = new URLSearchParams()
+  if (query.trim()) params.set('q', query.trim())
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  const res = await fetch(`${API_BASE}/parts${suffix}`, { cache: 'no-store', signal })
+  if (!res.ok) throw new Error(`parts failed: ${res.status}`)
+  return res.json()
+}
+
+export async function updatePart(
+  partId: string,
+  patch: Partial<Pick<Part, 'sku_internal' | 'name_standard' | 'part_number' | 'category_id' | 'brand' | 'notes'>>,
+): Promise<Part> {
+  const res = await fetch(`${API_BASE}/parts/${partId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      const body = await res.json()
+      detail = body?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `part update failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function listBrands(signal?: AbortSignal): Promise<{ brands: BrandRecommendation[]; total: number }> {
+  const res = await fetch(`${API_BASE}/brands`, { cache: 'no-store', signal })
+  if (!res.ok) throw new Error(`brands failed: ${res.status}`)
+  return res.json()
+}
+
+export async function createBrand(
+  name: string,
+  categories: string[] = [],
+  signal?: AbortSignal,
+): Promise<BrandRecommendation> {
+  const res = await fetch(`${API_BASE}/brands`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, categories }),
+    signal,
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      const body = await res.json()
+      detail = body?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `create brand failed: ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function recommendBrands(
   categoryId: string,
   signal?: AbortSignal,
@@ -153,6 +250,27 @@ export interface ComponentCategory {
   typical_use: string | null
   related_gb: string | null
   sort_order: number
+}
+
+export async function createCategory(
+  nameZh: string,
+  signal?: AbortSignal,
+): Promise<ComponentCategory> {
+  const res = await fetch(`${API_BASE}/component-categories`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name_zh: nameZh }),
+    signal,
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      const body = await res.json()
+      detail = body?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `create category failed: ${res.status}`)
+  }
+  return res.json()
 }
 
 export async function listCategories(signal?: AbortSignal): Promise<ComponentCategory[]> {

@@ -22,6 +22,7 @@ FIELD_DELETE = "__delete__"
 FIELD_STYLE = "style"
 FIELD_CATEGORY = "category_id"
 FIELD_SPEC = "spec"
+FIELD_PART_MAPPING = "part_id"
 
 
 def stringify(v: Any) -> str | None:

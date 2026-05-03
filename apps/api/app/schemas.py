@@ -26,6 +26,9 @@ class BOMNodeOut(BaseModel):
     # Denormalized Chinese label so frontend can render without a 2nd request.
     category_name: str | None = None
     spec: dict[str, Any] = Field(default_factory=dict)
+    # User-confirmed standard material mapping.
+    part_id: str | None = None
+    mapping_status: str = "unmapped"
 
     # MBOM scaffolding — null on all current data; populated only when the
     # MBOM module is built (post 30 paying PBOM customers, see business
@@ -73,3 +76,59 @@ class AgentChatRequest(BaseModel):
     # "MiniMax-M2.7" or "deepseek-v4-pro"; backend looks it up in the
     # MODEL_REGISTRY. Falls back to settings.llm_model if absent or unknown.
     model: str | None = None
+
+
+class PartOut(BaseModel):
+    id: str
+    sku_internal: str | None = None
+    name_standard: str
+    part_number: str | None = None
+    category_id: str | None = None
+    category_name: str | None = None
+    brand: str | None = None
+    spec: dict[str, Any] = Field(default_factory=dict)
+    notes: str | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class PartListOut(BaseModel):
+    items: list[PartOut]
+    total: int
+
+
+class PartPatch(BaseModel):
+    sku_internal: str | None = None
+    name_standard: str | None = None
+    part_number: str | None = None
+    category_id: str | None = None
+    brand: str | None = None
+    notes: str | None = None
+
+
+class ComponentCategoryCreate(BaseModel):
+    name_zh: str
+    name_en: str | None = None
+    parent_id: str | None = None
+    description: str | None = None
+
+
+class BrandCreate(BaseModel):
+    name: str
+    categories: list[str] = Field(default_factory=list)
+    region: str | None = None
+    notes: str | None = None
+
+
+class PartSuggestionOut(BaseModel):
+    part: PartOut
+    score: float
+    reason: str
+
+
+class MappingStatusOut(BaseModel):
+    node_id: str
+    status: str
+    mapped_part: PartOut | None = None
+    suggestions: list[PartSuggestionOut] = Field(default_factory=list)

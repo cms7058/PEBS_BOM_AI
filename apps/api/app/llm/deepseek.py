@@ -67,11 +67,14 @@ def _to_openai_messages(messages: list[ChatMessage]) -> list[dict]:
 
         elif m.role == "assistant":
             text_parts = []
+            reasoning_parts = []
             tool_calls: list[dict] = []
             for b in m.content:
                 btype = b.get("type") if isinstance(b, dict) else None
                 if btype == "text":
                     text_parts.append(b.get("text") or "")
+                elif btype == "reasoning":
+                    reasoning_parts.append(b.get("text") or "")
                 elif btype == "tool_use":
                     tool_calls.append({
                         "id": b.get("id") or "",
@@ -84,6 +87,10 @@ def _to_openai_messages(messages: list[ChatMessage]) -> list[dict]:
             msg: dict[str, Any] = {"role": "assistant"}
             # OpenAI requires 'content' field; null is allowed when tool_calls present
             msg["content"] = "\n".join(text_parts) if text_parts else None
+            # DeepSeek reasoning models require the previous assistant turn's
+            # reasoning_content to be replayed when continuing after tool calls.
+            if reasoning_parts:
+                msg["reasoning_content"] = "\n".join(reasoning_parts)
             if tool_calls:
                 msg["tool_calls"] = tool_calls
             out.append(msg)

@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { listEdits, undoEdit, type BOMEdit } from '@/lib/api'
+import { useAppDialog } from './AppDialog'
 
 // Fields that the undo endpoint accepts. Other rows (style, parent_id,
 // __create__, __delete__, etc.) show a disabled / non-actionable cell.
@@ -51,6 +52,7 @@ export default function EditHistoryModal({
   onClose: () => void
   onChanged?: () => void
 }) {
+  const dialog = useAppDialog()
   const [edits, setEdits] = useState<BOMEdit[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -74,11 +76,11 @@ export default function EditHistoryModal({
   const onUndo = async (e: BOMEdit) => {
     if (!UNDOABLE_FIELDS.has(e.field)) return
     if (
-      !window.confirm(
+      !(await dialog.confirm(
         `撤销该修改？\n\n` +
           `${e.node_label || e.node_id.slice(0, 8)} 的 ${e.field_label}` +
           `\n  当前: ${e.new_value ?? '（空）'} → 还原为: ${e.old_value ?? '（空）'}`,
-      )
+      ))
     )
       return
     setUndoing(e.id)

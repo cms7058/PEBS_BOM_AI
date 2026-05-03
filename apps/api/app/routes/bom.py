@@ -12,18 +12,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db import get_db
-from app.models.bom import BOM, BOMNode, BOMNodeEdit, ComponentCategory
-from app.schemas import BOMListItem, BOMNodeOut, BOMOut
+from app.models.bom import BOM, BOMNode, BOMNodeEdit, ComponentCategory, Part
+from app.schemas import BOMListItem, BOMNodeOut, BOMOut, MappingStatusOut, PartOut, PartSuggestionOut
 from app.services.audit import (
     FIELD_CATEGORY,
     FIELD_CREATE,
     FIELD_DELETE,
+    FIELD_PART_MAPPING,
     FIELD_SPEC,
     FIELD_STYLE,
     label_of,
     record_edit,
     stringify,
 )
+from app.services.part_mapping import add_alias_for_node, make_part_from_node, suggest_parts_for_node
+from app.tenancy import current_tenant
 
 
 def decode_user_name(x_user_name: str | None) -> str:
@@ -84,6 +87,18 @@ class NodeCreateIn(BaseModel):
     model_config = {"extra": "ignore"}
 
 
+class MappingConfirmIn(BaseModel):
+    part_id: str
+
+
+class MappingCreateIn(BaseModel):
+    name_standard: str | None = None
+    sku_internal: str | None = None
+    part_number: str | None = None
+    brand: str | None = None
+    notes: str | None = None
+
+
 @router.get("", response_model=list[BOMListItem])
 async def list_boms(db: AsyncSession = Depends(get_db)) -> list[BOMListItem]:
     q = (
@@ -104,6 +119,124 @@ async def get_bom(bom_id: str, db: AsyncSession = Depends(get_db)) -> BOMOut:
         raise HTTPException(404, "BOM not found")
     nodes = [BOMNodeOut.model_validate(n) for n in sorted(bom.nodes, key=lambda x: x.sort_order)]
     return BOMOut(id=bom.id, name=bom.name, source_file_id=bom.source_file_id, nodes=nodes)
+
+
+def _part_out(part: Part) -> PartOut:
+    return PartOut.model_validate(part)
+
+
+@router.get("/{bom_id}/nodes/{node_id}/mapping", response_model=MappingStatusOut)
+async def get_node_mapping(
+    bom_id: str,
+    node_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> MappingStatusOut:
+    node = (
+        await db.execute(select(BOMNode).where(BOMNode.id == node_id, BOMNode.bom_id == bom_id))
+    ).scalar_one_or_none()
+    if not node:
+        raise HTTPException(404, "Node not found")
+    suggestions = await suggest_parts_for_node(db, node)
+    return MappingStatusOut(
+        node_id=node.id,
+        status=node.mapping_status or ("confirmed" if node.part_id else "unmapped"),
+        mapped_part=_part_out(node.part) if node.part else None,
+        suggestions=[
+            PartSuggestionOut(
+                part=_part_out(item["part"]),
+                score=item["score"],
+                reason=item["reason"],
+            )
+            for item in suggestions
+        ],
+    )
+
+
+@router.post("/{bom_id}/nodes/{node_id}/mapping/confirm", response_model=BOMNodeOut)
+async def confirm_node_mapping(
+    bom_id: str,
+    node_id: str,
+    body: MappingConfirmIn,
+    db: AsyncSession = Depends(get_db),
+    x_user_name: str | None = Header(default=None, alias="X-User-Name"),
+) -> BOMNodeOut:
+    tenant_id = current_tenant()
+    node = (
+        await db.execute(select(BOMNode).where(BOMNode.id == node_id, BOMNode.bom_id == bom_id))
+    ).scalar_one_or_none()
+    if not node:
+        raise HTTPException(404, "Node not found")
+    part = (
+        await db.execute(select(Part).where(Part.id == body.part_id, Part.tenant_id == tenant_id))
+    ).scalar_one_or_none()
+    if not part:
+        raise HTTPException(404, "Part not found")
+    old = node.part_id
+    user_name = decode_user_name(x_user_name)
+    node.part_id = part.id
+    node.mapping_status = "confirmed"
+    await add_alias_for_node(db, part=part, node=node, user_name=user_name)
+    await record_edit(
+        db,
+        bom_id=bom_id,
+        node_id=node.id,
+        node_label=label_of(node),
+        field=FIELD_PART_MAPPING,
+        old_value=old,
+        new_value=f"{part.name_standard} ({part.id[:8]})",
+        user_name=user_name,
+        source="agent",
+    )
+    await db.commit()
+    await db.refresh(node)
+    return BOMNodeOut.model_validate(node)
+
+
+@router.post("/{bom_id}/nodes/{node_id}/mapping/create", response_model=BOMNodeOut)
+async def create_part_from_mapping(
+    bom_id: str,
+    node_id: str,
+    body: MappingCreateIn,
+    db: AsyncSession = Depends(get_db),
+    x_user_name: str | None = Header(default=None, alias="X-User-Name"),
+) -> BOMNodeOut:
+    node = (
+        await db.execute(select(BOMNode).where(BOMNode.id == node_id, BOMNode.bom_id == bom_id))
+    ).scalar_one_or_none()
+    if not node:
+        raise HTTPException(404, "Node not found")
+    user_name = decode_user_name(x_user_name)
+    part = make_part_from_node(node, user_name=user_name)
+    if body.name_standard:
+        part.name_standard = body.name_standard.strip()
+    if body.sku_internal:
+        part.sku_internal = body.sku_internal.strip()
+    if body.part_number:
+        part.part_number = body.part_number.strip()
+    if body.brand:
+        part.brand = body.brand.strip()
+    if body.notes:
+        part.notes = body.notes.strip()
+    db.add(part)
+    await db.flush()
+    old = node.part_id
+    node.part_id = part.id
+    node.mapping_status = "confirmed"
+    await add_alias_for_node(db, part=part, node=node, user_name=user_name)
+    await record_edit(
+        db,
+        bom_id=bom_id,
+        node_id=node.id,
+        node_label=label_of(node),
+        field=FIELD_PART_MAPPING,
+        old_value=old,
+        new_value=f"新建 {part.name_standard} ({part.id[:8]})",
+        user_name=user_name,
+        source="agent",
+    )
+    await db.commit()
+    await db.refresh(node)
+    return BOMNodeOut.model_validate(node)
 
 
 @router.post("/{bom_id}/nodes", response_model=BOMNodeOut)

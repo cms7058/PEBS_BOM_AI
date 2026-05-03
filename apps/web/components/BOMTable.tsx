@@ -232,9 +232,9 @@ export default function BOMTable({
         minWidth: 380,
         flex: 1.4,
         cellRenderer: TreeCell,
-        // disable editing on the tree column to keep guides intact;
-        // user can still edit other columns
-        editable: false,
+        editable: true,
+        singleClickEdit: false,
+        tooltipValueGetter: () => '选中后再次点击或双击可编辑零件名',
         pinned: 'left',
       },
       { field: 'part_number', headerName: '零件号', width: 140 },
@@ -310,6 +310,22 @@ export default function BOMTable({
             const id = e?.data?.id
             if (id) onSelect?.(id)
           }}
+          onCellClicked={(e: any) => {
+            const id = e?.data?.id
+            if (!id || e.colDef.field !== 'part_name') return
+            if (selectedId !== id) return
+            e.api.startEditingCell({
+              rowIndex: e.rowIndex,
+              colKey: 'part_name',
+            })
+          }}
+          onCellDoubleClicked={(e: any) => {
+            if (e.colDef.field !== 'part_name') return
+            e.api.startEditingCell({
+              rowIndex: e.rowIndex,
+              colKey: 'part_name',
+            })
+          }}
           onCellValueChanged={(e: any) => {
             // ag-grid fires this AFTER the in-memory row has been mutated.
             // We capture old/new so we can roll back if user cancels.
@@ -326,7 +342,9 @@ export default function BOMTable({
             setErrMsg(null)
             setPending({
               nodeId: e.data.id,
-              rowName: e.data.part_name || e.data.part_number || e.data.id.slice(0, 8),
+              rowName: field === 'part_name'
+                ? String(oldValue || e.data.part_number || e.data.id.slice(0, 8))
+                : e.data.part_name || e.data.part_number || e.data.id.slice(0, 8),
               field,
               oldValue,
               newValue,

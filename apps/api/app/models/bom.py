@@ -103,6 +103,13 @@ class BOMNode(Base):
     )
     spec: Mapped[dict] = mapped_column(JSON, default=dict)
 
+    # Customer-confirmed material mapping. This is the first layer of user data
+    # sedimentation: raw BOM rows can be linked to a tenant's standard Part.
+    part_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("parts.id"), nullable=True
+    )
+    mapping_status: Mapped[str] = mapped_column(String(16), default="unmapped")
+
     # UI metadata (used by G6 for style overrides, set by Agent)
     style: Mapped[dict] = mapped_column(JSON, default=dict)
     # Link back to source: {"type": "excel_row", "row": 12} | {"type": "cad_node", "id": "..."}
@@ -143,6 +150,7 @@ class BOMNode(Base):
 
     bom: Mapped[BOM] = relationship(back_populates="nodes")
     category: Mapped["ComponentCategory | None"] = relationship(lazy="joined")
+    part: Mapped["Part | None"] = relationship(lazy="joined")
 
     @property
     def category_name(self) -> str | None:
@@ -202,6 +210,75 @@ class ComponentCategory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class Part(Base):
+    """Tenant-scoped standard material master.
+
+    A Part is a customer-confirmed engineering fact. The agent may suggest
+    mappings, but only a user confirmation should create/link one.
+    """
+
+    __tablename__ = "parts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
+
+    sku_internal: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    name_standard: Mapped[str] = mapped_column(String(256))
+    part_number: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    category_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("component_categories.id"), nullable=True
+    )
+    brand: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    spec: Mapped[dict] = mapped_column(JSON, default=dict)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    category: Mapped["ComponentCategory | None"] = relationship(lazy="joined")
+    aliases: Mapped[list["PartAlias"]] = relationship(
+        back_populates="part", cascade="all, delete-orphan"
+    )
+
+    @property
+    def category_name(self) -> str | None:
+        return self.category.name_zh if self.category else None
+
+    __table_args__ = (
+        Index("ix_parts_tenant_name", "tenant_id", "name_standard"),
+        Index("ix_parts_tenant_number", "tenant_id", "part_number"),
+    )
+
+
+class PartAlias(Base):
+    """Raw engineer wording that has been confirmed to refer to a Part."""
+
+    __tablename__ = "part_aliases"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    part_id: Mapped[str] = mapped_column(String(36), ForeignKey("parts.id"), index=True)
+    raw_name: Mapped[str] = mapped_column(String(256))
+    raw_part_number: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_node_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("bom_nodes.id"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(16), default="confirmed")
+    confidence: Mapped[float] = mapped_column(Float, default=1.0)
+    confirmed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    part: Mapped[Part] = relationship(back_populates="aliases")
+
+    __table_args__ = (
+        Index("ix_part_aliases_tenant_raw_name", "tenant_id", "raw_name"),
+        Index("ix_part_aliases_tenant_raw_number", "tenant_id", "raw_part_number"),
     )
 
 

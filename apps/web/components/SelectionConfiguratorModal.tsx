@@ -12,6 +12,7 @@ import {
   patchNode,
   recommendBrands,
 } from '@/lib/api'
+import { useAppDialog } from './AppDialog'
 
 // ─── Selection configurator modal ────────────────────────────────────────
 // Single-screen MVP: pick category at top, fill parameters in middle,
@@ -35,6 +36,7 @@ export default function SelectionConfiguratorModal({
   onClose,
   onSaved,
 }: Props) {
+  const dialog = useAppDialog()
   const [categories, setCategories] = useState<ComponentCategory[]>([])
   const [loadingCats, setLoadingCats] = useState(true)
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(
@@ -150,7 +152,7 @@ export default function SelectionConfiguratorModal({
   }
 
   const handleClearClassification = async () => {
-    if (!confirm('清除当前类目和规格参数？')) return
+    if (!(await dialog.confirm('清除当前类目和规格参数？'))) return
     setSaving(true)
     setErrMsg(null)
     try {

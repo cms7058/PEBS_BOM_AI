@@ -12,12 +12,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models import BrandEntry, ComponentCategory
+from app.schemas import BrandCreate
 from app.tenancy import current_tenant
 
 router = APIRouter(prefix="/brands", tags=["brands"])
@@ -37,6 +38,92 @@ def _to_dict(b: BrandEntry, trust: str) -> dict[str, Any]:
         "upvotes": b.upvotes,
         "trust": trust,
     }
+
+
+@router.get("")
+async def list_brands(
+    q: str | None = None,
+    limit: int = 500,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant = current_tenant()
+    stmt = select(BrandEntry).where(
+        (BrandEntry.tenant_id == tenant) | (BrandEntry.visibility == "shared")
+    )
+    needle = (q or "").strip()
+    if needle:
+        like = f"%{needle}%"
+        stmt = stmt.where(
+            or_(
+                BrandEntry.name.ilike(like),
+                BrandEntry.region.ilike(like),
+                BrandEntry.notes.ilike(like),
+            )
+        )
+    rows = (
+        await db.execute(
+            stmt.order_by(BrandEntry.name).limit(max(1, min(limit, 1000)))
+        )
+    ).scalars().all()
+
+    brands = []
+    for b in rows:
+        trust = "private" if b.tenant_id == tenant and b.visibility == "private" else (
+            "shared-by-you" if b.tenant_id == tenant else "community"
+        )
+        brands.append(_to_dict(b, trust))
+    return {"brands": brands, "total": len(brands)}
+
+
+@router.post("", status_code=201)
+async def create_brand(
+    body: BrandCreate,
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    tenant = current_tenant()
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="品牌名称不能为空")
+
+    categories: list[str] = []
+    for category_id in body.categories:
+        category_id = category_id.strip()
+        if not category_id:
+            continue
+        if not await db.get(ComponentCategory, category_id):
+            raise HTTPException(status_code=400, detail=f"类目不存在：{category_id}")
+        if category_id not in categories:
+            categories.append(category_id)
+
+    existing = (
+        await db.execute(
+            select(BrandEntry).where(
+                BrandEntry.tenant_id == tenant,
+                BrandEntry.name == name,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        for category_id in categories:
+            if category_id not in (existing.categories or []):
+                existing.categories = [*(existing.categories or []), category_id]
+        await db.commit()
+        await db.refresh(existing)
+        return _to_dict(existing, "private" if existing.visibility == "private" else "shared-by-you")
+
+    entry = BrandEntry(
+        tenant_id=tenant,
+        name=name,
+        categories=categories,
+        region=(body.region or "").strip() or None,
+        notes=(body.notes or "").strip() or None,
+        source="ui",
+        visibility="private",
+    )
+    db.add(entry)
+    await db.commit()
+    await db.refresh(entry)
+    return _to_dict(entry, "private")
 
 
 @router.get("/recommend")

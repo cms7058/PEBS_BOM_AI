@@ -6,6 +6,8 @@ import { createNode, deleteNode, exportUrl, getBOM, getUserName, setUserName } f
 import BOMTable from './BOMTable'
 import BOMGraph from './BOMGraph'
 import AgentSidebar from './AgentSidebar'
+import { useAppDialog } from './AppDialog'
+import CompanyPartsPanel from './CompanyPartsPanel'
 import HierarchyRulePanel from './HierarchyRulePanel'
 import SelectionConfiguratorModal from './SelectionConfiguratorModal'
 
@@ -20,6 +22,7 @@ const AGENT_MIN = 0.15
 const AGENT_MAX = 0.6
 
 export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
+  const dialog = useAppDialog()
   const [bom, setBom] = useState<BOM>(initial)
   const [reloading, setReloading] = useState(false)
   // Bumped on every successful reload. Used as React `key` on the children
@@ -38,6 +41,10 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
   // context card. Workspace owns the open state so it can reload BOM after
   // save (via the existing reload() callback).
   const [configuratorOpen, setConfiguratorOpen] = useState(false)
+  // Agent-triggered "page jumps" are intentionally kept as in-workspace view
+  // switches. We do not push a /parts route, so the browser address never
+  // exposes the company material-library view.
+  const [mainView, setMainView] = useState<'bom' | 'parts'>('bom')
 
   // Top panel (graph) takes `topRatio` of the .bom-main column; the
   // bottom panel (table) gets the rest. Persisted across reloads.
@@ -61,14 +68,14 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
     }
   }, [])
 
-  const promptUserName = useCallback(() => {
+  const promptUserName = useCallback(async () => {
     if (typeof window === 'undefined') return
-    const next = window.prompt('请输入你的用户名（用于编辑历史记录）：', userName)
+    const next = await dialog.prompt('请输入你的用户名（用于编辑历史记录）：', userName)
     if (next === null) return
     const trimmed = next.trim() || 'anonymous'
     setUserName(trimmed)
     setUserNameState(trimmed)
-  }, [userName])
+  }, [dialog, userName])
 
   // Persist on change (cheap; mousemove → setState → effect).
   useEffect(() => {
@@ -123,7 +130,7 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
   const handleGraphAddChild = useCallback(async (parentId: string) => {
     const parent = bom.nodes.find((n) => n.id === parentId)
     if (!parent) return
-    const name = window.prompt(`在「${parent.part_name}」下新增子节点`, '新子节点')
+    const name = await dialog.prompt(`在「${parent.part_name}」下新增子节点`, '新子节点')
     if (name === null) return
     const partName = name.trim() || '新子节点'
     setReloading(true)
@@ -138,11 +145,11 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
     } catch (ex) {
       // eslint-disable-next-line no-console
       console.error('[BOMWorkspace] add child failed', ex)
-      window.alert('新增子节点失败，请稍后重试。')
+      await dialog.alert('新增子节点失败，请稍后重试。')
     } finally {
       setReloading(false)
     }
-  }, [bom.id, bom.nodes, reload])
+  }, [bom.id, bom.nodes, dialog, reload])
 
   const handleGraphDeleteNode = useCallback(async (nodeId: string) => {
     const node = bom.nodes.find((n) => n.id === nodeId)
@@ -151,7 +158,7 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
     const message = descendants > 0
       ? `删除「${node.part_name}」及其 ${descendants} 个子节点？`
       : `删除「${node.part_name}」？`
-    if (!window.confirm(message)) return
+    if (!(await dialog.confirm(message))) return
     setReloading(true)
     try {
       await deleteNode(bom.id, nodeId, descendants > 0)
@@ -160,11 +167,11 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
     } catch (ex) {
       // eslint-disable-next-line no-console
       console.error('[BOMWorkspace] delete node failed', ex)
-      window.alert('删除节点失败，请稍后重试。')
+      await dialog.alert('删除节点失败，请稍后重试。')
     } finally {
       setReloading(false)
     }
-  }, [bom.id, bom.nodes, countDescendants, reload, selectedId])
+  }, [bom.id, bom.nodes, countDescendants, dialog, reload, selectedId])
 
   // Drag: translate mouse Y inside .bom-main into a 0..1 ratio.
   const onMouseDownSplitter = useCallback((e: React.MouseEvent) => {
@@ -248,6 +255,20 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
         <div className="workspace-actions">
           <button
             type="button"
+            className={`view-tab ${mainView === 'bom' ? 'active' : ''}`}
+            onClick={() => setMainView('bom')}
+          >
+            BOM 工作台
+          </button>
+          <button
+            type="button"
+            className={`view-tab ${mainView === 'parts' ? 'active' : ''}`}
+            onClick={() => setMainView('parts')}
+          >
+            公司物料库
+          </button>
+          <button
+            type="button"
             className="workspace-user"
             onClick={promptUserName}
             title="点击修改用户名（保存到本地，用于编辑历史）"
@@ -259,44 +280,52 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
       </div>
       <div className="bom-page" ref={pageRef}>
         <div className="bom-main" ref={mainRef} style={mainFlexStyle}>
-          <div className="panel" style={topStyle}>
-            <div className="panel-header">BOM 结构图 (G6)</div>
-            <HierarchyRulePanel bomId={bom.id} onApplied={reload} />
-            <div className="panel-body">
-              {/* No key= here: BOMGraph updates the G6 graph in-place via
-                  setData() when `nodes` changes. Force-remounting was racy
-                  with G6 v5's async render and crashed inside graph.js. */}
-              <BOMGraph
-                nodes={bom.nodes}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                onAddChild={handleGraphAddChild}
-                onDeleteNode={handleGraphDeleteNode}
-              />
+          {mainView === 'parts' ? (
+            <div className="panel" style={{ flex: '1 1 0', minHeight: 0 }}>
+              <div className="panel-header">公司标准物料库</div>
+              <div className="panel-body">
+                <CompanyPartsPanel refreshKey={refreshKey} />
+              </div>
             </div>
-          </div>
-          <div
-            className="splitter-v"
-            role="separator"
-            aria-orientation="horizontal"
-            title="拖动调整上下区域大小（双击恢复 1:1）"
-            onMouseDown={onMouseDownSplitter}
-            onDoubleClick={() => setTopRatio(0.5)}
-          />
-          <div className="panel" style={bottomStyle}>
-            <div className="panel-header">BOM 表格</div>
-            <div className="panel-body">
-              <BOMTable
-                key={`t-${refreshKey}`}
-                nodes={bom.nodes}
-                bomId={bom.id}
-                onChanged={reload}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                exportHref={exportUrl(bom.id)}
+          ) : (
+            <>
+              <div className="panel" style={topStyle}>
+                <div className="panel-header">BOM 结构图 (G6)</div>
+                <HierarchyRulePanel bomId={bom.id} onApplied={reload} />
+                <div className="panel-body">
+                  <BOMGraph
+                    nodes={bom.nodes}
+                    selectedId={selectedId}
+                    onSelect={setSelectedId}
+                    onAddChild={handleGraphAddChild}
+                    onDeleteNode={handleGraphDeleteNode}
+                  />
+                </div>
+              </div>
+              <div
+                className="splitter-v"
+                role="separator"
+                aria-orientation="horizontal"
+                title="拖动调整上下区域大小（双击恢复 1:1）"
+                onMouseDown={onMouseDownSplitter}
+                onDoubleClick={() => setTopRatio(0.5)}
               />
-            </div>
-          </div>
+              <div className="panel" style={bottomStyle}>
+                <div className="panel-header">BOM 表格</div>
+                <div className="panel-body">
+                  <BOMTable
+                    key={`t-${refreshKey}`}
+                    nodes={bom.nodes}
+                    bomId={bom.id}
+                    onChanged={reload}
+                    selectedId={selectedId}
+                    onSelect={setSelectedId}
+                    exportHref={exportUrl(bom.id)}
+                  />
+                </div>
+              </div>
+            </>
+          )}
         </div>
         <div
           className="splitter-h"
@@ -315,6 +344,9 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
               selectedNode={selectedNode}
               onClearSelection={() => setSelectedId(null)}
               onOpenConfigurator={() => setConfiguratorOpen(true)}
+              onOpenParts={() => setMainView('parts')}
+              onOpenBom={() => setMainView('bom')}
+              currentView={mainView}
             />
           </div>
         </div>

@@ -18,13 +18,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.llm.base import ToolDef
-from app.models.bom import BOM, BOMNode, BrandEntry, ComponentCategory
+from app.models.bom import BOM, BOMNode, BrandEntry, ComponentCategory, Part
 from app.services.component_classifier import classify as heuristic_classify
+from app.services.part_mapping import add_alias_for_node, make_part_from_node, suggest_parts_for_node
 from app.tenancy import current_tenant
 from app.services.audit import (
     FIELD_CATEGORY,
     FIELD_CREATE,
     FIELD_DELETE,
+    FIELD_PART_MAPPING,
     FIELD_SPEC,
     FIELD_STYLE,
     label_of,
@@ -326,6 +328,84 @@ TOOLS: list[ToolDef] = [
         },
     ),
     ToolDef(
+        name="part_suggest_mappings",
+        description=(
+            "为一个 BOM 节点查找可能匹配的公司标准物料。"
+            "当用户选中未映射节点、问『这个件以前用过吗』或需要确认物料映射时调用。"
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["node_id"],
+            "properties": {
+                "node_id": {"type": "string"},
+                "limit": {"type": "integer", "default": 3},
+            },
+        },
+    ),
+    ToolDef(
+        name="part_list",
+        description=(
+            "查询公司现有标准物料库。用户问『公司现有物料』『物料库里有什么』"
+            "『查一下标准物料』时调用。结果多时前端会切换到公司物料列表页展示。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "q": {"type": ["string", "null"], "description": "可选关键词"},
+                "limit": {"type": "integer", "default": 50},
+            },
+        },
+    ),
+    ToolDef(
+        name="part_confirm_mapping",
+        description=(
+            "把一个 BOM 节点确认映射到已有标准物料，并把当前写法沉淀为别名。"
+            "只能在用户明确确认后调用，例如『选第一个』『用上银那个』『确认映射到 XXX』。"
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["node_id", "part_id"],
+            "properties": {
+                "node_id": {"type": "string"},
+                "part_id": {"type": "string"},
+            },
+        },
+    ),
+    ToolDef(
+        name="part_create_from_node",
+        description=(
+            "基于当前 BOM 节点创建一个新的公司标准物料，并立即确认映射。"
+            "仅在用户明确说『新建』『作为新物料保存』『没有匹配，创建一个』时调用。"
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["node_id"],
+            "properties": {
+                "node_id": {"type": "string"},
+                "name_standard": {"type": ["string", "null"]},
+                "sku_internal": {"type": ["string", "null"]},
+                "part_number": {"type": ["string", "null"]},
+                "brand": {"type": ["string", "null"]},
+                "notes": {"type": ["string", "null"]},
+            },
+        },
+    ),
+    ToolDef(
+        name="part_reject_mapping",
+        description=(
+            "把当前节点标记为暂不映射/拒绝本轮候选。"
+            "用户说『跳过』『先不映射』『这些都不是』时调用。"
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["node_id"],
+            "properties": {
+                "node_id": {"type": "string"},
+                "reason": {"type": ["string", "null"]},
+            },
+        },
+    ),
+    ToolDef(
         name="brand_add",
         description=(
             "把一个供应商品牌录入用户私有知识库。后续推荐品牌时这条会优先出现。\n"
@@ -542,6 +622,8 @@ class BOMToolExecutor:
                 "uom": n.uom,
                 "material": n.material,
                 "notes": n.notes,
+                "part_id": n.part_id,
+                "mapping_status": n.mapping_status,
             }
             for n in nodes
             if match(n)
@@ -1185,6 +1267,180 @@ class BOMToolExecutor:
                 "skipped": skipped,
             },
             mutated=n > 0,
+        )
+
+    # ----- standard material mapping (per-tenant) -----
+
+    @staticmethod
+    def _part_to_dict(p: Part) -> dict[str, Any]:
+        return {
+            "id": p.id,
+            "sku_internal": p.sku_internal,
+            "name_standard": p.name_standard,
+            "part_number": p.part_number,
+            "category_id": p.category_id,
+            "category_name": p.category_name,
+            "brand": p.brand,
+            "spec": p.spec or {},
+            "notes": p.notes,
+        }
+
+    async def _t_part_suggest_mappings(self, args: dict[str, Any]) -> ToolResult:
+        bom = await self._bom()
+        nid = args["node_id"]
+        limit = int(args.get("limit") or 3)
+        node = next((n for n in bom.nodes if n.id == nid), None)
+        if not node:
+            return ToolResult(ok=False, summary=f"节点 {nid} 不存在")
+        suggestions = await suggest_parts_for_node(self.db, node, limit=limit)
+        out = [
+            {
+                "part": self._part_to_dict(item["part"]),
+                "score": item["score"],
+                "reason": item["reason"],
+            }
+            for item in suggestions
+        ]
+        if node.part_id and node.part:
+            summary = f"{node.part_name} 已映射到 {node.part.name_standard}"
+        elif out:
+            summary = f"{node.part_name} 尚未映射，找到 {len(out)} 个候选标准物料"
+        else:
+            summary = f"{node.part_name} 尚未映射，暂未找到历史候选"
+        return ToolResult(
+            ok=True,
+            summary=summary,
+            data={
+                "node": {
+                    "id": node.id,
+                    "part_number": node.part_number,
+                    "part_name": node.part_name,
+                    "mapping_status": node.mapping_status,
+                    "part_id": node.part_id,
+                },
+                "mapped_part": self._part_to_dict(node.part) if node.part else None,
+                "suggestions": out,
+            },
+        )
+
+    async def _t_part_list(self, args: dict[str, Any]) -> ToolResult:
+        tenant = current_tenant()
+        q = (args.get("q") or "").strip().lower()
+        limit = max(1, min(int(args.get("limit") or 50), 200))
+        rows = (
+            await self.db.execute(select(Part).where(Part.tenant_id == tenant))
+        ).scalars().all()
+        out = []
+        for part in rows:
+            haystack = " ".join(
+                str(v)
+                for v in (part.name_standard, part.part_number, part.sku_internal, part.brand)
+                if v
+            ).lower()
+            if q and q not in haystack:
+                continue
+            out.append(self._part_to_dict(part))
+            if len(out) >= limit:
+                break
+        return ToolResult(
+            ok=True,
+            summary=f"公司标准物料库共有 {len(rows)} 项，本次返回 {len(out)} 项",
+            data={"items": out, "total": len(rows), "q": q or None},
+        )
+
+    async def _t_part_confirm_mapping(self, args: dict[str, Any]) -> ToolResult:
+        bom = await self._bom()
+        tenant = current_tenant()
+        node = next((n for n in bom.nodes if n.id == args["node_id"]), None)
+        if not node:
+            return ToolResult(ok=False, summary=f"节点 {args['node_id']} 不存在")
+        part = (
+            await self.db.execute(
+                select(Part).where(Part.id == args["part_id"], Part.tenant_id == tenant)
+            )
+        ).scalar_one_or_none()
+        if not part:
+            return ToolResult(ok=False, summary=f"标准物料 {args['part_id']} 不存在")
+        old = node.part_id
+        node.part_id = part.id
+        node.mapping_status = "confirmed"
+        await add_alias_for_node(self.db, part=part, node=node, user_name=self.user_name)
+        await record_edit(
+            self.db,
+            bom_id=bom.id,
+            node_id=node.id,
+            node_label=label_of(node),
+            field=FIELD_PART_MAPPING,
+            old_value=old,
+            new_value=f"{part.name_standard} ({part.id[:8]})",
+            user_name=self.user_name,
+            source="agent",
+        )
+        await self.db.commit()
+        return ToolResult(
+            ok=True,
+            summary=f"已将 {node.part_name} 映射到标准物料 {part.name_standard}",
+            data={"node_id": node.id, "part": self._part_to_dict(part)},
+            mutated=True,
+        )
+
+    async def _t_part_create_from_node(self, args: dict[str, Any]) -> ToolResult:
+        bom = await self._bom()
+        node = next((n for n in bom.nodes if n.id == args["node_id"]), None)
+        if not node:
+            return ToolResult(ok=False, summary=f"节点 {args['node_id']} 不存在")
+        part = make_part_from_node(node, user_name=self.user_name)
+        for field in ("name_standard", "sku_internal", "part_number", "brand", "notes"):
+            if args.get(field):
+                setattr(part, field, str(args[field]).strip())
+        self.db.add(part)
+        await self.db.flush()
+        old = node.part_id
+        node.part_id = part.id
+        node.mapping_status = "confirmed"
+        await add_alias_for_node(self.db, part=part, node=node, user_name=self.user_name)
+        await record_edit(
+            self.db,
+            bom_id=bom.id,
+            node_id=node.id,
+            node_label=label_of(node),
+            field=FIELD_PART_MAPPING,
+            old_value=old,
+            new_value=f"新建 {part.name_standard} ({part.id[:8]})",
+            user_name=self.user_name,
+            source="agent",
+        )
+        await self.db.commit()
+        return ToolResult(
+            ok=True,
+            summary=f"已新建标准物料 {part.name_standard}，并映射到 {node.part_name}",
+            data={"node_id": node.id, "part": self._part_to_dict(part)},
+            mutated=True,
+        )
+
+    async def _t_part_reject_mapping(self, args: dict[str, Any]) -> ToolResult:
+        bom = await self._bom()
+        node = next((n for n in bom.nodes if n.id == args["node_id"]), None)
+        if not node:
+            return ToolResult(ok=False, summary=f"节点 {args['node_id']} 不存在")
+        old = node.mapping_status
+        node.mapping_status = "rejected"
+        await record_edit(
+            self.db,
+            bom_id=bom.id,
+            node_id=node.id,
+            node_label=label_of(node),
+            field="mapping_status",
+            old_value=old,
+            new_value=f"rejected: {args.get('reason') or '用户暂不映射'}",
+            user_name=self.user_name,
+            source="agent",
+        )
+        await self.db.commit()
+        return ToolResult(
+            ok=True,
+            summary=f"已将 {node.part_name} 标记为暂不映射",
+            mutated=True,
         )
 
     # ----- brand knowledge base (per-tenant) -----

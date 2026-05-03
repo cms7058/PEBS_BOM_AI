@@ -66,6 +66,11 @@ SYSTEM_PROMPT_TEMPLATE = """你是 BOM 编辑助手，帮用户查看和编辑�
 - component_categories_list  列出非标件类目（直线导轨/丝杠/铝型材/定位销/联轴器…）
 - bom_classify_node     单个节点归类到某 category_id 并填 spec（结构化参数）
 - bom_classify_all      批量自动分类（启发式，不确定的节点保持未分类）
+- part_suggest_mappings 为节点查找可能匹配的公司标准物料
+- part_list             查询公司现有标准物料库
+- part_confirm_mapping  用户确认后，把节点映射到已有标准物料
+- part_create_from_node 用户确认新建后，基于节点创建标准物料并映射
+- part_reject_mapping   用户跳过/否定候选时，标记为暂不映射
 - brand_add             录入用户私有品牌知识库（『我们用 X 牌』时调用）
 - brand_bulk_add        **批量** 录入（用户粘贴 AVL 表格 / Excel 选区时调用）
 - brand_list            列出当前租户已录入的品牌
@@ -143,20 +148,36 @@ bound 可选字段：part_number / part_name / quantity / uom / material / suppl
 11. 颜色用 hex 值（如 #F46649 红、#60C42D 绿、#1783FF 蓝、#DB9D0D 黄）。
 
 【品牌知识库流程】
-12. **录入触发词**：用户说『我们用 X 牌』『我们供应商是 Y』『把 Z 加到品牌库』
+12. **物料映射是确认优先**：
+    - 当前端把用户选中的节点上下文放进对话（如『当前选中节点...未映射』）时，
+      先调 part_suggest_mappings 查看候选。
+    - 如果已有候选，只向用户解释候选和原因，询问『选第几个 / 新建 / 跳过』；
+      不要替用户自动确认。
+    - 用户回复『选第一个』『用上银那个』『确认这个』等明确确认时，
+      调 part_confirm_mapping。
+    - 用户回复『新建』『作为新物料保存』时，调 part_create_from_node。
+    - 用户回复『跳过』『先不映射』『都不是』时，调 part_reject_mapping。
+    - 所有确认结果会写入公司标准物料库和别名，后续类似 BOM 可复用。
+    - 用户查询『公司现有物料』『标准物料库』『已有物料』时，调 part_list；
+      不要把大量物料逐条塞满回复，只简短说明并让前端列表页承载结果。
+    - part_list 触发前端跳转列表页后，前端会询问用户是否停留；不要在回复里重复
+      输出完整物料清单。
+    - 用户说『返回 BOM 详情页』『回到工作台』『返回上一页』时，不要调用工具；
+      简短确认即可，前端会处理页面切换。
+13. **录入触发词**：用户说『我们用 X 牌』『我们供应商是 Y』『把 Z 加到品牌库』
     → 调 brand_add。如果用户提到的类目不在 component_categories 里，
     先告诉用户当前可选类目，让 ta 决定要哪个。
-13. **推荐触发词**：用户说『X 类目有哪些选择』『推荐几个 Y 厂家』『给我 X 的品牌』
+14. **推荐触发词**：用户说『X 类目有哪些选择』『推荐几个 Y 厂家』『给我 X 的品牌』
     → 先调 brand_recommend(category_id=X)。返回三档可信度：
        ★★ private  ←  当前客户自己录入的（最高优先）
        ★  shared   ←  自家共享出来的
        ·  community ←  其他客户共享给社区的
     回复时**带溯源标记**，让用户一眼看出哪些是自家 KB 哪些是社区共享。
-14. 如果 brand_recommend 返回 recommendations 为空（KB 还没录），
+15. 如果 brand_recommend 返回 recommendations 为空（KB 还没录），
     把 fallback_brands（类目自带的通用品牌列表）作为参考给用户，
     并主动建议：『要不要把你们常用的品牌加进 KB？以后我能直接帮你优先推荐。』
-15. **不要把 LLM 的通用品牌知识当成私有推荐展示**——明确说明这只是通用参考。
-16. **批量录入触发词**：用户在消息里粘贴**多行表格状内容**（一般 ≥ 3 行，
+16. **不要把 LLM 的通用品牌知识当成私有推荐展示**——明确说明这只是通用参考。
+17. **批量录入触发词**：用户在消息里粘贴**多行表格状内容**（一般 ≥ 3 行，
     每行能识别出品牌名 + 至少一个属性），无论分隔符是制表符 / 逗号 / 竖线 /
     多空格，都先尝试解析成 rows 字典数组，再调 brand_bulk_add 一次性入库。
     流程：
@@ -215,9 +236,10 @@ def _bom_summary(bom: BOM) -> str:
     cap = 60  # show more nodes than before so 50-node STEP files fit
     for n in nodes[:cap]:
         pn = n.part_number or "-"
+        mapping = n.mapping_status or ("confirmed" if n.part_id else "unmapped")
         lines.append(
             f"  {n.id} | L{n.level} | 零件号={pn} | 零件名={n.part_name} | "
-            f"{n.quantity}{n.uom}"
+            f"{n.quantity}{n.uom} | 映射={mapping}"
         )
     if len(nodes) > cap:
         lines.append(f"  ... 另 {len(nodes) - cap} 个节点未显示，可调 bom_list_nodes 查询")
@@ -319,6 +341,12 @@ async def chat(req: AgentChatRequest, db: AsyncSession = Depends(get_db)):
             # of blocks (text + tool_use) so the model can reference tool_use_id
             # on the next turn via tool_result.
             assistant_blocks: list[dict[str, Any]] = []
+            # DeepSeek reasoning models require the prior assistant
+            # reasoning_content to be included when continuing after tool calls.
+            # Keep this provider-scoped so Anthropic-compatible providers don't
+            # receive unknown content block types.
+            if thinking_buffer and getattr(provider, "provider_id", "") == "deepseek":
+                assistant_blocks.append({"type": "reasoning", "text": thinking_buffer})
             if accumulated_text:
                 assistant_blocks.append({"type": "text", "text": accumulated_text})
             for tu in pending_tool_uses:
