@@ -10,6 +10,7 @@ where destructive ops (delete cascade, bulk restyle) will require user OK.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -18,9 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.llm.base import ToolDef
-from app.models.bom import BOM, BOMNode, BrandEntry, ComponentCategory, Part
+from app.models.bom import BOM, BOMNode, BrandEntry, ComponentCategory, Part, PartAlias, PartImportDraft
 from app.services.component_classifier import classify as heuristic_classify
 from app.services.part_mapping import add_alias_for_node, make_part_from_node, suggest_parts_for_node
+from app.services.risk import evaluate_node_risks, severity_counts
 from app.tenancy import current_tenant
 from app.services.audit import (
     FIELD_CATEGORY,
@@ -353,6 +355,93 @@ TOOLS: list[ToolDef] = [
             "properties": {
                 "q": {"type": ["string", "null"], "description": "可选关键词"},
                 "limit": {"type": "integer", "default": 50},
+            },
+        },
+    ),
+    ToolDef(
+        name="part_draft_from_text",
+        description=(
+            "把用户粘贴的多行公司标准物料文本解析成导入草案。"
+            "只生成草案，不直接写库；前端会显示预览，用户确认后才入库。"
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+                "text": {"type": "string", "description": "用户粘贴的多行物料文本"},
+            },
+        },
+    ),
+    ToolDef(
+        name="part_get_detail",
+        description=(
+            "查询单个标准物料的详细信息，包括公司内部使用次数、最近一次使用时间、"
+            "最近用过该物料的 BOM 列表，以及该物料的历史别名（节点上的原始写法）。\n"
+            "用法：用户问『这个件以前用过吗』『上次用在哪个项目』『公司用了几次』、"
+            "或确认映射前需要核对历史使用情况时调用。\n"
+            "通常配合 part_suggest_mappings 或选中已映射节点的上下文使用——已经知道 part_id 时直接传，"
+            "避免重复触发候选搜索。"
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["part_id"],
+            "properties": {
+                "part_id": {"type": "string"},
+                "recent_limit": {
+                    "type": "integer",
+                    "default": 5,
+                    "description": "返回最近多少个 BOM 引用，默认 5，最多 20",
+                },
+            },
+        },
+    ),
+    ToolDef(
+        name="bom_risk_scan",
+        description=(
+            "对当前 BOM 跑一次基于规则的风险扫描，识别未映射、未分类、未指定供应商、"
+            "高价值件、长货期件、孤儿物料（库里只用过 ≤1 次）、停用物料 等常见风险。\n"
+            "用法：用户问『有什么风险』『检查一下问题』『哪些件需要关注』『审一下这个 BOM』时调用。\n"
+            "限制：纯规则、毫秒级返回、不调外部数据，结果适合作为汇报/审计的起点而非完整结论。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "min_severity": {
+                    "type": "string",
+                    "enum": ["info", "warn", "critical"],
+                    "default": "info",
+                    "description": "最低严重等级，低于此等级的标签不返回",
+                },
+            },
+        },
+    ),
+    ToolDef(
+        name="bom_confirm_all_suggested",
+        description=(
+            "扫描当前 BOM 的所有未映射节点，对每个节点找历史相似度最高的标准物料候选；"
+            "score 高于阈值（默认 0.85）的就批量确认映射。每条都会沉淀为别名、更新 part 使用计数。\n"
+            "用法：用户说『一键确认』『全部确认』『把高分候选都确认掉』『把能映射的都映射』时调用。\n"
+            "保守起见默认只确认 score ≥ 0.85 的强匹配；可通过 score_threshold 调整。"
+            "dry_run=true 时只返回会确认的清单不真改数据，用户没明确同意前用它先汇报。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "score_threshold": {
+                    "type": "number",
+                    "default": 0.85,
+                    "description": "最低分数阈值，低于此分的候选不会自动确认（0~1）",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "只预览不写入。在用户没明确同意前先 dry_run。",
+                },
+                "limit": {
+                    "type": "integer",
+                    "default": 100,
+                    "description": "本次最多处理多少节点，避免一次性确认过多，默认 100",
+                },
             },
         },
     ),
@@ -1283,6 +1372,8 @@ class BOMToolExecutor:
             "brand": p.brand,
             "spec": p.spec or {},
             "notes": p.notes,
+            "usage_count": p.usage_count or 0,
+            "last_used_at": p.last_used_at.isoformat() if p.last_used_at else None,
         }
 
     async def _t_part_suggest_mappings(self, args: dict[str, Any]) -> ToolResult:
@@ -1323,6 +1414,68 @@ class BOMToolExecutor:
             },
         )
 
+    async def _t_part_get_detail(self, args: dict[str, Any]) -> ToolResult:
+        tenant = current_tenant()
+        part_id = (args.get("part_id") or "").strip()
+        if not part_id:
+            return ToolResult(ok=False, summary="part_id 不能为空")
+        part = (
+            await self.db.execute(
+                select(Part).where(Part.id == part_id, Part.tenant_id == tenant)
+            )
+        ).scalar_one_or_none()
+        if not part:
+            return ToolResult(ok=False, summary=f"标准物料 {part_id} 不存在")
+        recent_limit = max(1, min(int(args.get("recent_limit") or 5), 20))
+        ref_rows = (
+            await self.db.execute(
+                select(BOM.id, BOM.name, BOM.updated_at, BOMNode.id, BOMNode.part_name)
+                .join(BOMNode, BOMNode.bom_id == BOM.id)
+                .where(BOMNode.part_id == part.id)
+                .order_by(BOM.updated_at.desc())
+                .limit(recent_limit)
+            )
+        ).all()
+        recent_boms = [
+            {
+                "bom_id": r[0],
+                "bom_name": r[1],
+                "bom_updated_at": r[2].isoformat() if r[2] else None,
+                "node_id": r[3],
+                "node_label": r[4],
+            }
+            for r in ref_rows
+        ]
+        alias_rows = (
+            await self.db.execute(
+                select(PartAlias)
+                .where(PartAlias.part_id == part.id, PartAlias.tenant_id == tenant)
+                .order_by(PartAlias.confirmed_at.desc(), PartAlias.created_at.desc())
+                .limit(10)
+            )
+        ).scalars().all()
+        recent_aliases = [
+            {
+                "raw_name": a.raw_name,
+                "raw_part_number": a.raw_part_number,
+                "confirmed_at": a.confirmed_at.isoformat() if a.confirmed_at else None,
+            }
+            for a in alias_rows
+        ]
+        detail = self._part_to_dict(part)
+        detail["recent_boms"] = recent_boms
+        detail["recent_aliases"] = recent_aliases
+        usage = part.usage_count or 0
+        if usage == 0:
+            summary = f"{part.name_standard} 还没有 BOM 节点引用过它"
+        else:
+            when = part.last_used_at.strftime("%Y-%m-%d") if part.last_used_at else "未知时间"
+            summary = (
+                f"{part.name_standard} 在公司内累计被引用 {usage} 次，"
+                f"最近一次使用在 {when}"
+            )
+        return ToolResult(ok=True, summary=summary, data=detail)
+
     async def _t_part_list(self, args: dict[str, Any]) -> ToolResult:
         tenant = current_tenant()
         q = (args.get("q") or "").strip().lower()
@@ -1346,6 +1499,212 @@ class BOMToolExecutor:
             ok=True,
             summary=f"公司标准物料库共有 {len(rows)} 项，本次返回 {len(out)} 项",
             data={"items": out, "total": len(rows), "q": q or None},
+        )
+
+    async def _t_part_draft_from_text(self, args: dict[str, Any]) -> ToolResult:
+        text = (args.get("text") or "").strip()
+        if not text:
+            return ToolResult(ok=False, summary="没有可解析的物料文本")
+
+        tenant = current_tenant()
+        cats = {
+            c.id: c
+            for c in (await self.db.execute(select(ComponentCategory))).scalars().all()
+        }
+        brand_rows = (
+            await self.db.execute(select(BrandEntry).where(BrandEntry.tenant_id == tenant))
+        ).scalars().all()
+        brand_names = sorted([b.name for b in brand_rows if b.name], key=len, reverse=True)
+
+        rows: list[dict[str, Any]] = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip().strip("|")
+            if not line or set(line) <= {"-", "|"}:
+                continue
+            parts = [p.strip() for p in line.replace("\t", ",").replace("，", ",").split(",") if p.strip()]
+            name = parts[0] if parts else line
+            haystack = " ".join(parts)
+            category_id, _score = heuristic_classify(name, description=haystack)
+            category = cats.get(category_id or "")
+            brand = next((b for b in brand_names if b.lower() in haystack.lower()), None)
+            unit_cost = None
+            for token in parts[1:]:
+                cleaned = token.replace("¥", "").replace("元", "").strip()
+                try:
+                    unit_cost = float(cleaned)
+                    break
+                except ValueError:
+                    continue
+            supplier = None
+            lead_time = None
+            notes: list[str] = []
+            for token in parts[1:]:
+                if "供应商" in token:
+                    supplier = token.split("供应商", 1)[-1].strip(" :：")
+                elif "货期" in token or "天" in token:
+                    lead_time = token
+                elif token != brand and unit_cost is None:
+                    notes.append(token)
+            rows.append(
+                {
+                    "action": "create",
+                    "name_standard": name,
+                    "sku_internal": None,
+                    "part_number": parts[1] if len(parts) > 1 and "供应商" not in parts[1] else None,
+                    "category_id": category_id,
+                    "category_name": category.name_zh if category else None,
+                    "brand": brand,
+                    "supplier": supplier,
+                    "uom": "EA",
+                    "unit_cost": unit_cost,
+                    "typical_lead_time": lead_time,
+                    "notes": "；".join(notes) if notes else None,
+                    "risk": "未识别类目" if not category_id else None,
+                }
+            )
+
+        if not rows:
+            return ToolResult(ok=False, summary="没有解析出有效物料行")
+
+        draft = PartImportDraft(
+            tenant_id=tenant,
+            source_type="chat",
+            status="draft",
+            rows=rows,
+            created_by=self.user_name,
+        )
+        self.db.add(draft)
+        await self.db.commit()
+        await self.db.refresh(draft)
+        return ToolResult(
+            ok=True,
+            summary=f"已生成标准物料导入草案，共 {len(rows)} 行，等待确认入库",
+            data={"draft_id": draft.id, "rows": rows},
+        )
+
+    async def _t_bom_risk_scan(self, args: dict[str, Any]) -> ToolResult:
+        bom = await self._bom()
+        rank = {"info": 2, "warn": 1, "critical": 0}
+        min_sev = (args.get("min_severity") or "info").lower()
+        min_rank = rank.get(min_sev, 2)
+
+        flagged: list[dict[str, Any]] = []
+        all_tags: list[list[Any]] = []
+        for node in bom.nodes:
+            tags = evaluate_node_risks(node, node.part)
+            all_tags.append(tags)
+            kept = [t for t in tags if rank.get(t.severity, 3) <= min_rank]
+            if not kept:
+                continue
+            flagged.append({
+                "node_id": node.id,
+                "node_label": node.part_name or node.part_number or node.id[:8],
+                "tags": [
+                    {"code": t.code, "severity": t.severity, "message": t.message}
+                    for t in kept
+                ],
+            })
+        counts = severity_counts(all_tags)
+        if flagged:
+            summary = (
+                f"扫到 {len(flagged)} 个风险节点："
+                f"严重 {counts['critical']} · 警告 {counts['warn']} · 提示 {counts['info']}"
+            )
+        else:
+            summary = f"未发现 {min_sev} 级及以上风险"
+        return ToolResult(
+            ok=True,
+            summary=summary,
+            data={
+                "total_nodes": len(bom.nodes),
+                "flagged_nodes": len(flagged),
+                "severity_counts": counts,
+                "items": flagged,
+            },
+        )
+
+    async def _t_bom_confirm_all_suggested(self, args: dict[str, Any]) -> ToolResult:
+        bom = await self._bom()
+        threshold = float(args.get("score_threshold") or 0.85)
+        dry_run = bool(args.get("dry_run") or False)
+        limit = max(1, min(int(args.get("limit") or 100), 500))
+
+        candidates: list[dict[str, Any]] = []
+        for node in bom.nodes:
+            if node.part_id:
+                continue
+            suggestions = await suggest_parts_for_node(self.db, node, limit=1)
+            if not suggestions:
+                continue
+            top = suggestions[0]
+            score = float(top["score"])
+            if score < threshold:
+                continue
+            candidates.append({"node": node, "part": top["part"], "score": score, "reason": top["reason"]})
+            if len(candidates) >= limit:
+                break
+
+        if not candidates:
+            return ToolResult(
+                ok=True,
+                summary=f"没有 score ≥ {threshold} 的可自动确认候选",
+                data={"threshold": threshold, "confirmed": [], "dry_run": dry_run},
+            )
+
+        preview = [
+            {
+                "node_id": c["node"].id,
+                "node_label": c["node"].part_name or c["node"].part_number,
+                "part_id": c["part"].id,
+                "part_name": c["part"].name_standard,
+                "score": round(c["score"], 3),
+                "reason": c["reason"],
+            }
+            for c in candidates
+        ]
+
+        if dry_run:
+            return ToolResult(
+                ok=True,
+                summary=f"将自动确认 {len(candidates)} 个节点（dry_run 未写入）",
+                data={"threshold": threshold, "preview": preview, "dry_run": True},
+            )
+
+        confirmed: list[dict[str, Any]] = []
+        now = datetime.utcnow()
+        for c in candidates:
+            node = c["node"]
+            part = c["part"]
+            old = node.part_id
+            node.part_id = part.id
+            node.mapping_status = "confirmed"
+            part.usage_count = (part.usage_count or 0) + 1
+            part.last_used_at = now
+            await add_alias_for_node(self.db, part=part, node=node, user_name=self.user_name)
+            await record_edit(
+                self.db,
+                bom_id=bom.id,
+                node_id=node.id,
+                node_label=label_of(node),
+                field=FIELD_PART_MAPPING,
+                old_value=old,
+                new_value=f"{part.name_standard} ({part.id[:8]}) auto",
+                user_name=self.user_name,
+                source="agent",
+            )
+            confirmed.append({
+                "node_id": node.id,
+                "node_label": node.part_name,
+                "part_id": part.id,
+                "part_name": part.name_standard,
+                "score": round(c["score"], 3),
+            })
+        await self.db.commit()
+        return ToolResult(
+            ok=True,
+            summary=f"已批量确认 {len(confirmed)} 个节点（score ≥ {threshold}）",
+            data={"threshold": threshold, "confirmed": confirmed, "dry_run": False},
+            mutated=True,
         )
 
     async def _t_part_confirm_mapping(self, args: dict[str, Any]) -> ToolResult:

@@ -15,10 +15,24 @@ import type { BOMNode } from '@/lib/api'
 
 interface Props {
   nodes: BOMNode[]
+  mappingCandidateIds?: Set<string>
+  // node_id → highest-severity risk tag for that node. Used to color the
+  // card stroke without changing layout. Selection still wins over risk
+  // (selected = blue) so the user always knows what's pinned in chat.
+  riskSeverityByNodeId?: Map<string, 'critical' | 'warn' | 'info'>
   selectedId?: string | null
   onSelect?: (id: string | null) => void
   onAddChild?: (id: string) => void
   onDeleteNode?: (id: string) => void
+}
+
+// Stroke colors for risk-tier rendering. Critical reuses confidence-low red
+// for visual continuity; warn uses the existing yellow; info gets a softer
+// blue distinct from selection blue (COLORS.B).
+const RISK_STROKE: Record<'critical' | 'warn' | 'info', string> = {
+  critical: '#dc2626',
+  warn: '#d97706',
+  info: '#0ea5e9',
 }
 
 // ─── Status color palette (from fund-flow example) ────────────────────────
@@ -35,6 +49,12 @@ function statusOf(confidence: number): keyof typeof COLORS {
   if (confidence >= 0.7) return 'B'
   if (confidence >= 0.5) return 'Y'
   return 'R'
+}
+
+function mappingColor(d: any): string {
+  if (d.partId || d.mappingStatus === 'confirmed') return COLORS.G
+  if (d.hasMappingCandidate) return COLORS.B
+  return COLORS.R
 }
 
 // Truncate visible text so the layout doesn't blow out the 220×60 box.
@@ -389,10 +409,8 @@ class BomNode extends Rect {
     const s = slotOf(this.data, 'progress')
     if (!slotVisible(s)) return null
     const conf = Number(this.data.confidence) || 0
-    const accent = this.data.accent as string | undefined
-    const status = statusOf(conf)
     const { radius } = attributes
-    const color = s.color || accent || COLORS[status]
+    const color = s.color || mappingColor(this.data)
     const percent = `${conf * 100}%`
     const [width, height] = (this as any).getSize(attributes)
     return {
@@ -423,15 +441,30 @@ class BomNode extends Rect {
     const highlight = u.highlight === true
     const dim = u.dim === true
     const selected = u.selected === true
+    // Risk-tier stroke is a fallback color — explicit user style.stroke (set
+    // via bom_set_slot / bom_restyle_node) still wins, and selection always
+    // wins over both. Bumps lineWidth too so the colored ring is visible at
+    // the default zoom level.
+    const riskSev: 'critical' | 'warn' | 'info' | undefined = u.riskSeverity || undefined
+    const riskStroke = riskSev ? RISK_STROKE[riskSev] : null
+    const riskBumpsWidth = riskSev === 'critical' || riskSev === 'warn'
     return {
       ...keyStyle,
       fill: card.fill || u.fill || '#fff',
       lineWidth: selected
         ? 3
-        : (card.lineWidth ?? u.lineWidth ?? (highlight ? 2 : 1)),
+        : (
+          card.lineWidth
+          ?? u.lineWidth
+          ?? (highlight ? 2 : riskBumpsWidth ? 1.6 : 1)
+        ),
       stroke: selected
         ? COLORS.B
-        : (card.stroke || u.stroke || (highlight ? COLORS.R : GREY)),
+        : (
+          card.stroke
+          || u.stroke
+          || (highlight ? COLORS.R : (riskStroke || GREY))
+        ),
       opacity: card.opacity ?? u.opacity ?? (dim ? 0.45 : 1),
     }
   }
@@ -503,7 +536,11 @@ if (typeof document !== 'undefined' && !(document as any)[ICONFONT_FLAG]) {
 // we keep the graph faithful to real BOM nodes instead of adding a fake root.
 const SYNTHETIC_ROOT_ID = '__bom_root__'
 
-function nodeData(n: BOMNode) {
+function nodeData(
+  n: BOMNode,
+  mappingCandidateIds: Set<string> = new Set(),
+  riskSeverityByNodeId: Map<string, 'critical' | 'warn' | 'info'> = new Map(),
+) {
   const s = (n.style || {}) as Record<string, unknown>
   return {
     partNumber: n.part_number,
@@ -518,6 +555,10 @@ function nodeData(n: BOMNode) {
     description: n.description,
     categoryId: n.category_id,
     categoryName: n.category_name,
+    partId: n.part_id,
+    mappingStatus: n.mapping_status,
+    hasMappingCandidate: mappingCandidateIds.has(n.id),
+    riskSeverity: riskSeverityByNodeId.get(n.id) ?? null,
     spec: n.spec,
     fill: typeof s.fill === 'string' ? s.fill : undefined,
     stroke: typeof s.stroke === 'string' ? s.stroke : undefined,
@@ -535,8 +576,10 @@ function nodeData(n: BOMNode) {
 
 function toGraphData(
   nodes: BOMNode[],
+  mappingCandidateIds: Set<string> = new Set(),
   selectedId: string | null = null,
   collapsedIds: Set<string> = new Set(),
+  riskSeverityByNodeId: Map<string, 'critical' | 'warn' | 'info'> = new Map(),
 ) {
   if (nodes.length === 0) return { nodes: [], edges: [] }
   const ids = new Set(nodes.map((n) => n.id))
@@ -567,7 +610,7 @@ function toGraphData(
   // non-collapsed parent. dagre handles forests fine without that hint.
   const g6Nodes: any[] = visibleNodes.map((n) => ({
     id: n.id,
-    ...nodeData(n),
+    ...nodeData(n, mappingCandidateIds, riskSeverityByNodeId),
     selected: selectedId === n.id,
     childCount: childrenByParent.get(n.id)?.length || 0,
     collapsed: collapsedIds.has(n.id),
@@ -585,6 +628,8 @@ function toGraphData(
 
 export default function BOMGraph({
   nodes,
+  mappingCandidateIds = new Set(),
+  riskSeverityByNodeId = new Map(),
   selectedId,
   onSelect,
   onAddChild,
@@ -615,7 +660,7 @@ export default function BOMGraph({
     const graph = new Graph({
       container: containerRef.current,
       autoFit: 'view',
-      data: toGraphData(nodes, selectedId ?? null, collapsedIds),
+      data: toGraphData(nodes, mappingCandidateIds, selectedId ?? null, collapsedIds, riskSeverityByNodeId),
       node: {
         type: 'bom-node',
         style: {
@@ -723,7 +768,7 @@ export default function BOMGraph({
         try {
           await graph.clear()
           if (!aliveRef.current || (graph as any).destroyed) return
-          graph.setData(toGraphData(nodes, selectedId ?? null, collapsedIds))
+          graph.setData(toGraphData(nodes, mappingCandidateIds, selectedId ?? null, collapsedIds, riskSeverityByNodeId))
           await graph.render()
         } catch {
           /* ignore — graph likely about to unmount */
@@ -733,7 +778,7 @@ export default function BOMGraph({
     return () => {
       if (id !== null) cancelAnimationFrame(id)
     }
-  }, [nodes, selectedId, collapsedIds])
+  }, [nodes, mappingCandidateIds, riskSeverityByNodeId, selectedId, collapsedIds])
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
 }

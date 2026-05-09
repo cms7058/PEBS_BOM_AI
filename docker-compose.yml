@@ -48,6 +48,17 @@ services:
       context: ./apps/api
       dockerfile: Dockerfile
     env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pebs}:${POSTGRES_PASSWORD:-pebs_dev_pw}@postgres:5432/${POSTGRES_DB:-pebs_bom}
+      DB_AUTO_CREATE: "false"
+      DEPLOYMENT_MODE: ${DEPLOYMENT_MODE:-private}
+      TENANT_MODE: ${TENANT_MODE:-single}
+      DEFAULT_TENANT_ID: ${DEFAULT_TENANT_ID:-default}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-minio}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_BUCKET: ${MINIO_BUCKET:-pebs-bom}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-admin12345}
     depends_on:
       postgres:
         condition: service_healthy
@@ -59,7 +70,7 @@ services:
       - "8000:8000"
     volumes:
       - ./apps/api:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: sh -c "alembic -c alembic.ini upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
   web:
     build:

@@ -34,6 +34,18 @@ class Settings(BaseSettings):
 
     # Database — SQLite by default for native dev. Override via env for Postgres.
     database_url: str = "sqlite+aiosqlite:///./data/app.db"
+    # Deployment modes:
+    # - private: customer private deployment, normally single tenant
+    # - cloud: PEBS hosted/cloud deployment, tenant resolved by auth later
+    deployment_mode: str = "private"
+    # Tenant mode:
+    # - single: every row uses default_tenant_id
+    # - multi: future cloud mode reads tenant from auth/request context
+    tenant_mode: str = "single"
+    default_tenant_id: str = "default"
+    # Native dev keeps create_all + SQLite shim for fast iteration. Production
+    # should set DB_AUTO_CREATE=false and run Alembic migrations explicitly.
+    db_auto_create: bool = True
 
     # Storage backend: "local" (filesystem) or "minio"
     storage_backend: str = "local"

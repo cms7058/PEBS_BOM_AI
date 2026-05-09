@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import AuthGuard from '@/components/AuthGuard'
 import Uploader from '@/components/Uploader'
 import { API_BASE } from '@/lib/api'
 
@@ -18,12 +19,15 @@ export default async function HomePage() {
   const boms = await fetchList()
   return (
     <main className="home-shell">
+      <AuthGuard />
       <div className="home-topbar">
         <div className="brand-mark">
           <span className="brand-cube" />
           <span>PEBS BOM</span>
         </div>
         <div className="home-meta">
+          <Link className="admin-link" href="/guest">匿名访问</Link>
+          <Link className="admin-link" href="/admin">后台管理</Link>
           <span className="user-dot">♙</span>
           <span>anonymous</span>
         </div>
@@ -90,7 +94,7 @@ export default async function HomePage() {
             <p className="empty-history">暂无数据</p>
           ) : (
             <ul className="history-list">
-              {boms.slice(0, 6).map((b) => (
+              {boms.map((b) => (
                 <li key={b.id}>
                   <Link href={`/bom/${b.id}`}>{b.name}</Link>
                   <span>{b.node_count} 节点</span>
@@ -98,7 +102,6 @@ export default async function HomePage() {
               ))}
             </ul>
           )}
-          <Link className="history-all" href="/">查看全部历史</Link>
         </article>
       </section>
 

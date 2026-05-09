@@ -1,9 +1,8 @@
 """Tenant resolution.
 
-Current deployment is single-tenant — all data belongs to a fixed tenant id
-"default". Multi-tenant comes later via Auth/JWT; making the resolver a
-single function means flipping that switch later only touches THIS file
-plus the Auth middleware.
+Private deployments are normally single-tenant: all data belongs to a fixed
+tenant id (default: "default"). PEBS hosted/cloud deployments can switch
+TENANT_MODE=multi later and resolve tenant from auth/request context.
 
 Convention used everywhere in the codebase:
   - Every tenant-scoped table has a `tenant_id: str` column
@@ -13,13 +12,16 @@ Convention used everywhere in the codebase:
 
 from __future__ import annotations
 
-DEFAULT_TENANT_ID = "default"
+from app.config import settings
+
+DEFAULT_TENANT_ID = settings.default_tenant_id
 
 
 def current_tenant() -> str:
     """Return the currently-authenticated tenant id.
 
-    For now always returns DEFAULT_TENANT_ID. When Auth lands, read this
-    from the request context (e.g. via FastAPI Depends).
+    In TENANT_MODE=single, always returns DEFAULT_TENANT_ID.
+    In TENANT_MODE=multi, auth middleware should set a request-local tenant
+    before this function is expanded.
     """
     return DEFAULT_TENANT_ID

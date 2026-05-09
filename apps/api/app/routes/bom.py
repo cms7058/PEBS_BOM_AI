@@ -13,7 +13,20 @@ from sqlalchemy.orm import selectinload
 
 from app.db import get_db
 from app.models.bom import BOM, BOMNode, BOMNodeEdit, ComponentCategory, Part
-from app.schemas import BOMListItem, BOMNodeOut, BOMOut, MappingStatusOut, PartOut, PartSuggestionOut
+from app.schemas import (
+    BOMListItem,
+    BOMNodeOut,
+    BOMOut,
+    MappingScanItemOut,
+    MappingScanOut,
+    MappingStatusOut,
+    PartOut,
+    PartSuggestionOut,
+    RiskScanItemOut,
+    RiskScanOut,
+    RiskTagOut,
+    SuggestionReferenceOut,
+)
 from app.services.audit import (
     FIELD_CATEGORY,
     FIELD_CREATE,
@@ -26,6 +39,7 @@ from app.services.audit import (
     stringify,
 )
 from app.services.part_mapping import add_alias_for_node, make_part_from_node, suggest_parts_for_node
+from app.services.risk import evaluate_node_risks, severity_counts
 from app.tenancy import current_tenant
 
 
@@ -125,6 +139,18 @@ def _part_out(part: Part) -> PartOut:
     return PartOut.model_validate(part)
 
 
+def _suggestion_ref(item: dict[str, Any]) -> SuggestionReferenceOut | None:
+    ref = item.get("reference")
+    if not ref:
+        return None
+    return SuggestionReferenceOut(
+        bom_id=ref["bom_id"],
+        bom_name=ref.get("bom_name"),
+        node_id=ref["node_id"],
+        node_label=ref["node_label"],
+    )
+
+
 @router.get("/{bom_id}/nodes/{node_id}/mapping", response_model=MappingStatusOut)
 async def get_node_mapping(
     bom_id: str,
@@ -146,9 +172,120 @@ async def get_node_mapping(
                 part=_part_out(item["part"]),
                 score=item["score"],
                 reason=item["reason"],
+                reference=_suggestion_ref(item),
             )
             for item in suggestions
         ],
+    )
+
+
+@router.get("/{bom_id}/mapping/scan", response_model=MappingScanOut)
+async def scan_bom_mapping(
+    bom_id: str,
+    limit: int = 80,
+    db: AsyncSession = Depends(get_db),
+) -> MappingScanOut:
+    nodes = (
+        await db.execute(
+            select(BOMNode)
+            .where(BOMNode.bom_id == bom_id)
+            .options(selectinload(BOMNode.part))
+            .order_by(BOMNode.level, BOMNode.sort_order, BOMNode.part_number, BOMNode.part_name)
+        )
+    ).scalars().all()
+    if not nodes:
+        exists = (await db.execute(select(BOM.id).where(BOM.id == bom_id))).scalar_one_or_none()
+        if not exists:
+            raise HTTPException(404, "BOM not found")
+
+    confirmed_count = 0
+    unmapped_count = 0
+    candidate_count = 0
+    items: list[MappingScanItemOut] = []
+
+    for node in nodes:
+        status = node.mapping_status or ("confirmed" if node.part_id else "unmapped")
+        suggestions: list[PartSuggestionOut] = []
+        mapped_part = _part_out(node.part) if node.part else None
+        if status == "confirmed" and node.part_id:
+            confirmed_count += 1
+        else:
+            unmapped_count += 1
+            raw_suggestions = await suggest_parts_for_node(db, node, limit=3)
+            suggestions = [
+                PartSuggestionOut(
+                    part=_part_out(item["part"]),
+                    score=float(item["score"]),
+                    reason=str(item["reason"]),
+                    reference=_suggestion_ref(item),
+                )
+                for item in raw_suggestions
+            ]
+            if suggestions:
+                candidate_count += 1
+        if len(items) < max(1, min(limit, 300)) and (status != "confirmed" or suggestions):
+            items.append(
+                MappingScanItemOut(
+                    node_id=node.id,
+                    node_label=node.part_name or node.part_number or node.id[:8],
+                    status=status,
+                    mapped_part=mapped_part,
+                    suggestions=suggestions,
+                )
+            )
+
+    return MappingScanOut(
+        bom_id=bom_id,
+        total_nodes=len(nodes),
+        confirmed_count=confirmed_count,
+        unmapped_count=unmapped_count,
+        candidate_count=candidate_count,
+        items=items,
+    )
+
+
+@router.get("/{bom_id}/risks", response_model=RiskScanOut)
+async def scan_bom_risks(
+    bom_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> RiskScanOut:
+    """Per-BOM rule-based risk scan. Cheap to call repeatedly — purely
+    derives from existing fields, no LLM, no external calls.
+    """
+    nodes = (
+        await db.execute(
+            select(BOMNode)
+            .where(BOMNode.bom_id == bom_id)
+            .options(selectinload(BOMNode.part))
+            .order_by(BOMNode.level, BOMNode.sort_order)
+        )
+    ).scalars().all()
+    if not nodes:
+        exists = (await db.execute(select(BOM.id).where(BOM.id == bom_id))).scalar_one_or_none()
+        if not exists:
+            raise HTTPException(404, "BOM not found")
+
+    items: list[RiskScanItemOut] = []
+    all_tag_lists = []
+    for node in nodes:
+        tags = evaluate_node_risks(node, node.part)
+        all_tag_lists.append(tags)
+        if not tags:
+            continue
+        items.append(
+            RiskScanItemOut(
+                node_id=node.id,
+                node_label=node.part_name or node.part_number or node.id[:8],
+                tags=[RiskTagOut(code=t.code, severity=t.severity, message=t.message) for t in tags],
+            )
+        )
+
+    return RiskScanOut(
+        bom_id=bom_id,
+        total_nodes=len(nodes),
+        flagged_nodes=len(items),
+        severity_counts=severity_counts(all_tag_lists),
+        items=items,
     )
 
 
@@ -175,6 +312,8 @@ async def confirm_node_mapping(
     user_name = decode_user_name(x_user_name)
     node.part_id = part.id
     node.mapping_status = "confirmed"
+    part.usage_count = (part.usage_count or 0) + 1
+    part.last_used_at = datetime.utcnow()
     await add_alias_for_node(db, part=part, node=node, user_name=user_name)
     await record_edit(
         db,
@@ -222,6 +361,8 @@ async def create_part_from_mapping(
     old = node.part_id
     node.part_id = part.id
     node.mapping_status = "confirmed"
+    part.usage_count = 1
+    part.last_used_at = datetime.utcnow()
     await add_alias_for_node(db, part=part, node=node, user_name=user_name)
     await record_edit(
         db,

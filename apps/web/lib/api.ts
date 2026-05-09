@@ -108,14 +108,31 @@ export interface Part {
   category_id: string | null
   category_name: string | null
   brand: string | null
+  supplier: string | null
+  uom: string
+  unit_cost: number | null
+  typical_lead_time: string | null
+  status: 'active' | 'inactive' | 'pending'
+  usage_count: number
+  last_used_at: string | null
   spec: Record<string, unknown>
   notes: string | null
+}
+
+export interface SuggestionReference {
+  bom_id: string
+  bom_name: string | null
+  node_id: string
+  node_label: string
 }
 
 export interface PartSuggestion {
   part: Part
   score: number
   reason: string
+  // Set when the score was lifted by a cross-BOM match — points at the
+  // historical node we recognised. UI renders it as a deep link.
+  reference?: SuggestionReference | null
 }
 
 export interface MappingStatus {
@@ -123,6 +140,349 @@ export interface MappingStatus {
   status: 'unmapped' | 'suggested' | 'confirmed' | 'rejected'
   mapped_part: Part | null
   suggestions: PartSuggestion[]
+}
+
+export interface MappingScanItem {
+  node_id: string
+  node_label: string
+  status: 'unmapped' | 'suggested' | 'confirmed' | 'rejected'
+  mapped_part: Part | null
+  suggestions: PartSuggestion[]
+}
+
+export interface SubscriptionPlan {
+  id: 'personal' | 'team' | 'enterprise' | string
+  name: string
+  tenant_type: 'personal' | 'team' | 'enterprise' | string
+  description: string | null
+  price_label: string | null
+  price_cents: number
+  currency: string
+  duration_days: number
+  seat_limit: number | null
+  bom_limit: number | null
+  enabled: boolean
+  sort_order: number
+}
+
+export interface Tenant {
+  id: string
+  name: string
+  tenant_type: string
+  subscription_plan_id: string
+  status: string
+  owner_name: string | null
+}
+
+export interface AppUser {
+  id: string
+  tenant_id: string
+  username: string
+  display_name: string
+  role: string
+  email: string | null
+  phone: string | null
+  status: string
+}
+
+export interface FeatureFlag {
+  id: string
+  plan_id: string
+  feature_key: string
+  feature_name: string
+  description: string | null
+  enabled: boolean
+  config: Record<string, unknown>
+}
+
+export interface AdminOverview {
+  plans: SubscriptionPlan[]
+  tenants: Tenant[]
+  features: FeatureFlag[]
+  users: AppUser[]
+}
+
+export interface PaymentOrder {
+  id: string
+  plan_id: string
+  email: string
+  amount_cents: number
+  currency: string
+  duration_days: number
+  provider: string
+  status: 'pending' | 'paid' | 'failed' | string
+  checkout_url: string | null
+}
+
+const ADMIN_TOKEN_KEY = 'pebs.admin.token'
+const CURRENT_USER_KEY = 'pebs.current.user'
+
+export function getAdminToken(): string {
+  if (typeof window === 'undefined') return ''
+  return localStorage.getItem(ADMIN_TOKEN_KEY) || ''
+}
+
+export function setAdminToken(token: string): void {
+  if (typeof window === 'undefined') return
+  localStorage.setItem(ADMIN_TOKEN_KEY, token)
+}
+
+export function getCurrentUser(): AppUser | null {
+  if (typeof window === 'undefined') return null
+  const raw = localStorage.getItem(CURRENT_USER_KEY)
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as AppUser
+  } catch {
+    return null
+  }
+}
+
+export function setCurrentUser(user: AppUser): void {
+  if (typeof window === 'undefined') return
+  localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(user))
+}
+
+export function clearAdminToken(): void {
+  if (typeof window === 'undefined') return
+  localStorage.removeItem(ADMIN_TOKEN_KEY)
+  localStorage.removeItem(CURRENT_USER_KEY)
+}
+
+function adminHeaders(): Record<string, string> {
+  const token = getAdminToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+export async function getAdminOverview(signal?: AbortSignal): Promise<AdminOverview> {
+  const res = await fetch(`${API_BASE}/admin/overview`, { cache: 'no-store', signal })
+  if (!res.ok) throw new Error(`admin overview failed: ${res.status}`)
+  return res.json()
+}
+
+export async function listSubscriptionPlans(signal?: AbortSignal): Promise<SubscriptionPlan[]> {
+  const res = await fetch(`${API_BASE}/admin/plans`, { cache: 'no-store', signal })
+  if (!res.ok) throw new Error(`plans failed: ${res.status}`)
+  return res.json()
+}
+
+export async function listPublicFeatures(signal?: AbortSignal): Promise<FeatureFlag[]> {
+  const res = await fetch(`${API_BASE}/admin/overview`, { cache: 'no-store', signal })
+  if (!res.ok) throw new Error(`admin overview failed: ${res.status}`)
+  const data = (await res.json()) as AdminOverview
+  return data.features || []
+}
+
+export async function sendEmailCode(
+  email: string,
+  purpose = 'register',
+): Promise<{ ok: boolean; message: string; dev_code?: string; expires_in_seconds: number }> {
+  const res = await fetch(`${API_BASE}/admin/email-codes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, purpose }),
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      detail = (await res.json())?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `email code failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function createPaymentOrder(
+  planId: string,
+  email: string,
+): Promise<PaymentOrder> {
+  const res = await fetch(`${API_BASE}/admin/payment-orders`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ plan_id: planId, email }),
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      detail = (await res.json())?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `payment order failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function confirmPaymentOrder(orderId: string): Promise<PaymentOrder> {
+  const res = await fetch(`${API_BASE}/admin/payment-orders/${orderId}/confirm`, {
+    method: 'POST',
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      detail = (await res.json())?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `payment confirm failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function adminLogin(
+  username: string,
+  password: string,
+): Promise<{ token: string; user: AppUser }> {
+  const res = await fetch(`${API_BASE}/admin/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      detail = (await res.json())?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `login failed: ${res.status}`)
+  }
+  const data = await res.json()
+  setAdminToken(data.token)
+  setCurrentUser(data.user)
+  return data
+}
+
+export async function registerTenantUser(
+  planId: string,
+  username: string,
+  password: string,
+  displayName?: string,
+  email?: string,
+  emailCode?: string,
+  paymentOrderId?: string,
+): Promise<{ token: string; user: AppUser }> {
+  const res = await fetch(`${API_BASE}/admin/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      plan_id: planId,
+      username,
+      password,
+      display_name: displayName,
+      email,
+      email_code: emailCode,
+      payment_order_id: paymentOrderId,
+    }),
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      detail = (await res.json())?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `register failed: ${res.status}`)
+  }
+  const data = await res.json()
+  setAdminToken(data.token)
+  setCurrentUser(data.user)
+  return data
+}
+
+export async function updateAdminFeature(
+  featureId: string,
+  patch: Partial<Pick<FeatureFlag, 'enabled' | 'feature_name' | 'description' | 'config'>>,
+): Promise<AdminOverview> {
+  const res = await fetch(`${API_BASE}/admin/features/${featureId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...adminHeaders() },
+    body: JSON.stringify(patch),
+  })
+  if (!res.ok) throw new Error(`feature update failed: ${res.status}`)
+  return res.json()
+}
+
+export async function updateAdminPlan(
+  planId: string,
+  patch: Partial<Pick<SubscriptionPlan, 'name' | 'description' | 'price_label' | 'price_cents' | 'currency' | 'duration_days' | 'seat_limit' | 'bom_limit' | 'enabled'>>,
+): Promise<AdminOverview> {
+  const res = await fetch(`${API_BASE}/admin/plans/${planId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...adminHeaders() },
+    body: JSON.stringify(patch),
+  })
+  if (!res.ok) throw new Error(`plan update failed: ${res.status}`)
+  return res.json()
+}
+
+export async function updateAdminUser(
+  userId: string,
+  patch: Partial<Pick<AppUser, 'display_name' | 'email' | 'phone' | 'role' | 'status'>> & { password?: string },
+): Promise<AdminOverview> {
+  const res = await fetch(`${API_BASE}/admin/users/${userId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...adminHeaders() },
+    body: JSON.stringify(patch),
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      detail = (await res.json())?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `user update failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export interface MappingScan {
+  bom_id: string
+  total_nodes: number
+  confirmed_count: number
+  unmapped_count: number
+  candidate_count: number
+  items: MappingScanItem[]
+}
+
+export interface PartReference {
+  bom_id: string
+  bom_name: string
+  node_id: string
+  node_label: string
+  part_number: string | null
+  quantity: number
+  uom: string
+  supplier: string | null
+  unit_cost: number | null
+}
+
+export interface PartAlias {
+  raw_name: string
+  raw_part_number: string | null
+  confirmed_at: string | null
+}
+
+export interface PartDetail {
+  part: Part
+  references: PartReference[]
+  aliases: PartAlias[]
+}
+
+export interface PartDraftRow {
+  action: string
+  name_standard: string
+  sku_internal: string | null
+  part_number: string | null
+  category_id: string | null
+  category_name: string | null
+  brand: string | null
+  supplier: string | null
+  uom: string
+  unit_cost: number | null
+  typical_lead_time: string | null
+  notes: string | null
+  risk: string | null
+}
+
+export interface PartImportDraft {
+  id: string
+  status: 'draft' | 'confirmed' | 'cancelled'
+  source_type: string
+  rows: PartDraftRow[]
+  created_at: string
+  confirmed_at: string | null
 }
 
 export async function getNodeMapping(
@@ -138,18 +498,162 @@ export async function getNodeMapping(
   return res.json()
 }
 
-export async function listParts(query = '', signal?: AbortSignal): Promise<{ items: Part[]; total: number }> {
+// ─── Risk scan ────────────────────────────────────────────────────────────
+
+export interface RiskTag {
+  code: string
+  severity: 'info' | 'warn' | 'critical'
+  message: string
+}
+
+export interface RiskScanItem {
+  node_id: string
+  node_label: string
+  tags: RiskTag[]
+}
+
+export interface RiskScan {
+  bom_id: string
+  total_nodes: number
+  flagged_nodes: number
+  severity_counts: { info?: number; warn?: number; critical?: number }
+  items: RiskScanItem[]
+}
+
+export async function scanBOMRisks(
+  bomId: string,
+  signal?: AbortSignal,
+): Promise<RiskScan> {
+  const res = await fetch(`${API_BASE}/boms/${bomId}/risks`, {
+    cache: 'no-store',
+    signal,
+  })
+  if (!res.ok) throw new Error(`risks failed: ${res.status}`)
+  return res.json()
+}
+
+export async function scanBOMMapping(
+  bomId: string,
+  signal?: AbortSignal,
+): Promise<MappingScan> {
+  const res = await fetch(`${API_BASE}/boms/${bomId}/mapping/scan?limit=1000`, {
+    cache: 'no-store',
+    signal,
+  })
+  if (!res.ok) throw new Error(`mapping scan failed: ${res.status}`)
+  return res.json()
+}
+
+export async function listParts(
+  query = '',
+  signal?: AbortSignal,
+  categoryId?: string | null,
+): Promise<{ items: Part[]; total: number }> {
   const params = new URLSearchParams()
   if (query.trim()) params.set('q', query.trim())
+  if (categoryId) params.set('category_id', categoryId)
   const suffix = params.toString() ? `?${params.toString()}` : ''
   const res = await fetch(`${API_BASE}/parts${suffix}`, { cache: 'no-store', signal })
   if (!res.ok) throw new Error(`parts failed: ${res.status}`)
   return res.json()
 }
 
+export async function getPartDetail(
+  partId: string,
+  signal?: AbortSignal,
+): Promise<PartDetail> {
+  const res = await fetch(`${API_BASE}/parts/${partId}`, { cache: 'no-store', signal })
+  if (!res.ok) throw new Error(`part detail failed: ${res.status}`)
+  return res.json()
+}
+
+export async function getPartImportDraft(
+  draftId: string,
+  signal?: AbortSignal,
+): Promise<PartImportDraft> {
+  const res = await fetch(`${API_BASE}/parts/import-drafts/${draftId}`, { cache: 'no-store', signal })
+  if (!res.ok) throw new Error(`import draft failed: ${res.status}`)
+  return res.json()
+}
+
+export async function confirmPartImportDraft(
+  draftId: string,
+): Promise<{ draft: PartImportDraft; created: Part[] }> {
+  const res = await fetch(`${API_BASE}/parts/import-drafts/${draftId}/confirm`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error(`confirm import draft failed: ${res.status}`)
+  return res.json()
+}
+
+export async function uploadPartImportDraft(file: File): Promise<PartImportDraft> {
+  const fd = new FormData()
+  fd.append('file', file)
+  const res = await fetch(`${API_BASE}/parts/import-drafts/upload`, {
+    method: 'POST',
+    body: fd,
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      const body = await res.json()
+      detail = body?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `upload import draft failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function confirmNodeMapping(
+  bomId: string,
+  nodeId: string,
+  partId: string,
+  userName?: string,
+): Promise<BOMNode> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (userName) headers['X-User-Name'] = encodeURIComponent(userName)
+  const res = await fetch(`${API_BASE}/boms/${bomId}/nodes/${nodeId}/mapping/confirm`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ part_id: partId }),
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      const body = await res.json()
+      detail = body?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `mapping confirm failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function createPartFromNode(
+  bomId: string,
+  nodeId: string,
+  userName?: string,
+): Promise<BOMNode> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (userName) headers['X-User-Name'] = encodeURIComponent(userName)
+  const res = await fetch(`${API_BASE}/boms/${bomId}/nodes/${nodeId}/mapping/create`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({}),
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      const body = await res.json()
+      detail = body?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `mapping create failed: ${res.status}`)
+  }
+  return res.json()
+}
+
 export async function updatePart(
   partId: string,
-  patch: Partial<Pick<Part, 'sku_internal' | 'name_standard' | 'part_number' | 'category_id' | 'brand' | 'notes'>>,
+  patch: Partial<Pick<Part, 'sku_internal' | 'name_standard' | 'part_number' | 'category_id' | 'brand' | 'supplier' | 'uom' | 'unit_cost' | 'typical_lead_time' | 'status' | 'notes'>>,
 ): Promise<Part> {
   const res = await fetch(`${API_BASE}/parts/${partId}`, {
     method: 'PATCH',
@@ -454,7 +958,7 @@ export async function undoEdit(bomId: string, editId: string): Promise<BOMNode> 
 
 export type AgentEvent =
   | { type: 'delta'; text: string }
-  | { type: 'tool_call'; name: string; args: Record<string, unknown>; ok: boolean; summary: string; mutated: boolean }
+  | { type: 'tool_call'; name: string; args: Record<string, unknown>; ok: boolean; summary: string; mutated: boolean; data?: Record<string, unknown> }
   | { type: 'bom_updated' }
   | { type: 'status'; phase: string }
   | { type: 'done'; reason?: string }
@@ -509,6 +1013,7 @@ export async function* chatStream(
             ok: parsed.ok,
             summary: parsed.summary,
             mutated: parsed.mutated,
+            data: parsed.data,
           }
         else if (eventName === 'bom_updated') yield { type: 'bom_updated' }
         else if (eventName === 'status') yield { type: 'status', phase: parsed.phase }

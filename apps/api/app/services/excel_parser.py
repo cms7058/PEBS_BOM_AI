@@ -15,6 +15,8 @@ def parse_spreadsheet(filename: str, data: bytes) -> dict[str, Any]:
         df = pd.read_excel(buf, sheet_name=0, dtype=object)
     elif suffix == "csv":
         df = pd.read_csv(buf, dtype=object)
+    elif suffix == "tsv":
+        df = pd.read_csv(buf, dtype=object, sep="\t")
     else:
         raise ValueError(f"Unsupported file type: {suffix}")
 

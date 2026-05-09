@@ -5,10 +5,14 @@ import type {
   BrandRecommendation,
   ComponentCategory,
   ParameterDef,
+  Part,
 } from '@/lib/api'
 import {
   classifyNode,
+  confirmNodeMapping,
+  getUserName,
   listCategories,
+  listParts,
   patchNode,
   recommendBrands,
 } from '@/lib/api'
@@ -48,6 +52,9 @@ export default function SelectionConfiguratorModal({
   )
   // Supplier override — defaults to whatever node already has.
   const [supplier, setSupplier] = useState<string>(node.supplier || '')
+  const [companyParts, setCompanyParts] = useState<Part[]>([])
+  const [loadingParts, setLoadingParts] = useState(false)
+  const [selectedPartId, setSelectedPartId] = useState<string | null>(node.part_id)
 
   const [saving, setSaving] = useState(false)
   const [errMsg, setErrMsg] = useState<string | null>(null)
@@ -72,9 +79,12 @@ export default function SelectionConfiguratorModal({
     if (!selectedCategoryId) {
       setBrands([])
       setFallbackBrands([])
+      setCompanyParts([])
+      setSelectedPartId(null)
       return
     }
     const ctrl = new AbortController()
+    setLoadingParts(true)
     recommendBrands(selectedCategoryId, ctrl.signal)
       .then((r) => {
         setBrands(r.recommendations || [])
@@ -85,6 +95,17 @@ export default function SelectionConfiguratorModal({
           // eslint-disable-next-line no-console
           console.warn('[Configurator] recommendBrands failed', ex)
         }
+      })
+    listParts('', ctrl.signal, selectedCategoryId)
+      .then((r) => setCompanyParts(r.items || []))
+      .catch((ex) => {
+        if (ex?.name !== 'AbortError') {
+          // eslint-disable-next-line no-console
+          console.warn('[Configurator] listParts failed', ex)
+        }
+      })
+      .finally(() => {
+        if (!ctrl.signal.aborted) setLoadingParts(false)
       })
     return () => ctrl.abort()
   }, [selectedCategoryId])
@@ -141,6 +162,9 @@ export default function SelectionConfiguratorModal({
         await patchNode(bomId, node.id, {
           supplier: supplier.trim() || null,
         })
+      }
+      if (selectedPartId && selectedPartId !== node.part_id) {
+        await confirmNodeMapping(bomId, node.id, selectedPartId, getUserName())
       }
       onSaved()
       onClose()
@@ -300,9 +324,67 @@ export default function SelectionConfiguratorModal({
             </Section>
           )}
 
-          {/* 3) Brand recommendations */}
+          {/* 3) Company standard parts */}
           {selectedCategoryId && (
-            <Section title="③ 选品牌（可选）">
+            <Section title="③ 公司自有物料（可选）">
+              {loadingParts ? (
+                <span style={{ color: '#6b7280', fontSize: 13 }}>正在加载公司标准物料…</span>
+              ) : companyParts.length === 0 ? (
+                <span style={{ color: '#6b7280', fontSize: 13 }}>
+                  当前类目下暂无公司标准物料。保存分类后，可以通过智能体新建标准物料。
+                </span>
+              ) : (
+                <div style={{ display: 'grid', gap: 8 }}>
+                  {companyParts.slice(0, 12).map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedPartId(selectedPartId === p.id ? null : p.id)
+                        if (p.brand) setSupplier(p.brand)
+                        else if (p.supplier) setSupplier(p.supplier)
+                      }}
+                      style={{
+                        textAlign: 'left',
+                        border: `1px solid ${selectedPartId === p.id ? '#1783FF' : '#d8e2f3'}`,
+                        background: selectedPartId === p.id ? '#eff6ff' : '#fff',
+                        borderRadius: 6,
+                        padding: '8px 10px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <strong style={{ color: '#0a1730', fontSize: 13 }}>
+                          {p.name_standard}
+                        </strong>
+                        {p.part_number && (
+                          <span style={{ color: '#58667d', fontSize: 12 }}>{p.part_number}</span>
+                        )}
+                        <span style={{ flex: 1 }} />
+                        <span style={{ color: '#7d8aa0', fontSize: 11 }}>
+                          用过 {p.usage_count || 0} 次
+                        </span>
+                      </div>
+                      <div style={{ color: '#7d8aa0', fontSize: 12, marginTop: 3 }}>
+                        {[p.sku_internal, p.brand, p.supplier, p.typical_lead_time]
+                          .filter(Boolean)
+                          .join(' · ') || '暂无补充信息'}
+                      </div>
+                    </button>
+                  ))}
+                  {companyParts.length > 12 && (
+                    <span style={{ color: '#7d8aa0', fontSize: 12 }}>
+                      还有 {companyParts.length - 12} 个物料，可到公司标准物料库继续筛选。
+                    </span>
+                  )}
+                </div>
+              )}
+            </Section>
+          )}
+
+          {/* 4) Brand recommendations */}
+          {selectedCategoryId && (
+            <Section title="④ 选品牌（可选）">
               <input
                 type="text"
                 value={supplier}

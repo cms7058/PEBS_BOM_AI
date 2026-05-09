@@ -232,6 +232,13 @@ class Part(Base):
         String(64), ForeignKey("component_categories.id"), nullable=True
     )
     brand: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    supplier: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    uom: Mapped[str] = mapped_column(String(32), default="EA")
+    unit_cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    typical_lead_time: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    usage_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     spec: Mapped[dict] = mapped_column(JSON, default=dict)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -280,6 +287,25 @@ class PartAlias(Base):
         Index("ix_part_aliases_tenant_raw_name", "tenant_id", "raw_name"),
         Index("ix_part_aliases_tenant_raw_number", "tenant_id", "raw_part_number"),
     )
+
+
+class PartImportDraft(Base):
+    """Staged standard-material import/change set.
+
+    Agent-generated CRUD must be confirmed by a human before it writes into
+    the tenant material master.
+    """
+
+    __tablename__ = "part_import_drafts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    source_type: Mapped[str] = mapped_column(String(32), default="chat")
+    status: Mapped[str] = mapped_column(String(16), default="draft")
+    rows: Mapped[list] = mapped_column(JSON, default=list)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class BrandEntry(Base):
@@ -347,3 +373,135 @@ class BrandEntry(Base):
         # Recommendation queries scan by (tenant_id, visibility).
         Index("ix_brand_entries_tenant_visibility", "tenant_id", "visibility"),
     )
+
+
+class SubscriptionPlan(Base):
+    """Admin-defined product packaging for personal/team/enterprise tenants."""
+
+    __tablename__ = "subscription_plans"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64))
+    tenant_type: Mapped[str] = mapped_column(String(16), index=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    price_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    price_cents: Mapped[int] = mapped_column(Integer, default=0)
+    currency: Mapped[str] = mapped_column(String(8), default="CNY")
+    duration_days: Mapped[int] = mapped_column(Integer, default=365)
+    seat_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bom_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class Tenant(Base):
+    """Tenant shell for cloud multi-tenant mode and private single-tenant mode."""
+
+    __tablename__ = "tenants"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    tenant_type: Mapped[str] = mapped_column(String(16), default="personal", index=True)
+    subscription_plan_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("subscription_plans.id"), default="personal"
+    )
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    owner_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    plan: Mapped["SubscriptionPlan | None"] = relationship(lazy="joined")
+
+
+class FeatureFlag(Base):
+    """Per-plan feature switch, editable by administrators."""
+
+    __tablename__ = "feature_flags"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    plan_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("subscription_plans.id"), index=True
+    )
+    feature_key: Mapped[str] = mapped_column(String(64), index=True)
+    feature_name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    config: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    plan: Mapped[SubscriptionPlan] = relationship(lazy="joined")
+
+    __table_args__ = (
+        Index("ix_feature_flags_plan_feature", "plan_id", "feature_key"),
+    )
+
+
+class AppUser(Base):
+    """Application user shell for admin login and future tenant membership."""
+
+    __tablename__ = "app_users"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(128))
+    role: Mapped[str] = mapped_column(String(32), default="member", index=True)
+    email: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    password_hash: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class EmailVerificationCode(Base):
+    """One-time email verification code for registration."""
+
+    __tablename__ = "email_verification_codes"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    email: Mapped[str] = mapped_column(String(128), index=True)
+    code_hash: Mapped[str] = mapped_column(String(128))
+    purpose: Mapped[str] = mapped_column(String(32), default="register", index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class PaymentOrder(Base):
+    """Subscription payment order.
+
+    Current implementation is a mock payment provider that marks orders paid
+    when the user confirms. The schema is intentionally provider-neutral so it
+    can later store WeChat Pay / Alipay / Stripe IDs and callbacks.
+    """
+
+    __tablename__ = "payment_orders"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    plan_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("subscription_plans.id"), index=True
+    )
+    email: Mapped[str] = mapped_column(String(128), index=True)
+    amount_cents: Mapped[int] = mapped_column(Integer, default=0)
+    currency: Mapped[str] = mapped_column(String(8), default="CNY")
+    duration_days: Mapped[int] = mapped_column(Integer, default=365)
+    provider: Mapped[str] = mapped_column(String(32), default="mock")
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    checkout_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    provider_ref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    plan: Mapped["SubscriptionPlan | None"] = relationship(lazy="joined")

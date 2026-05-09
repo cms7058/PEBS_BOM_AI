@@ -68,6 +68,7 @@ SYSTEM_PROMPT_TEMPLATE = """你是 BOM 编辑助手，帮用户查看和编辑�
 - bom_classify_all      批量自动分类（启发式，不确定的节点保持未分类）
 - part_suggest_mappings 为节点查找可能匹配的公司标准物料
 - part_list             查询公司现有标准物料库
+- part_draft_from_text  把用户粘贴的多行物料文本解析成待确认导入草案
 - part_confirm_mapping  用户确认后，把节点映射到已有标准物料
 - part_create_from_node 用户确认新建后，基于节点创建标准物料并映射
 - part_reject_mapping   用户跳过/否定候选时，标记为暂不映射
@@ -159,9 +160,10 @@ bound 可选字段：part_number / part_name / quantity / uom / material / suppl
     - 用户回复『跳过』『先不映射』『都不是』时，调 part_reject_mapping。
     - 所有确认结果会写入公司标准物料库和别名，后续类似 BOM 可复用。
     - 用户查询『公司现有物料』『标准物料库』『已有物料』时，调 part_list；
-      不要把大量物料逐条塞满回复，只简短说明并让前端列表页承载结果。
-    - part_list 触发前端跳转列表页后，前端会询问用户是否停留；不要在回复里重复
-      输出完整物料清单。
+      不要在回复正文列出物料明细，不要用编号清单复述物料名。只用一句话说明
+      已生成可查看清单；前端会在对话里提供『点击查看』入口、图表和工作台内部数据视图。
+    - 用户粘贴多行标准物料、供应商物料清单、采购台账片段，并要求导入/加入标准物料库时，
+      调 part_draft_from_text。它只生成导入草案，不直接入库；用户需要在前端预览后确认。
     - 用户说『返回 BOM 详情页』『回到工作台』『返回上一页』时，不要调用工具；
       简短确认即可，前端会处理页面切换。
 13. **录入触发词**：用户说『我们用 X 牌』『我们供应商是 Y』『把 Z 加到品牌库』
@@ -387,13 +389,19 @@ async def chat(req: AgentChatRequest, db: AsyncSession = Depends(get_db)):
                             "ok": result.ok,
                             "summary": result.summary,
                             "mutated": result.mutated,
+                            "data": result.data,
                         },
                         ensure_ascii=False,
                     ),
                 }
 
                 content = result.summary
-                if result.data is not None:
+                # Large material-master payloads are for the frontend view
+                # renderer only. Do not feed them back into the LLM context:
+                # otherwise the model may spend tokens repeating long lists in
+                # chat as the private material library grows.
+                ui_only_data_tools = {"part_list"}
+                if result.data is not None and tu["name"] not in ui_only_data_tools:
                     content += "\n\n" + json.dumps(result.data, ensure_ascii=False)
                 tool_result_blocks.append(
                     {

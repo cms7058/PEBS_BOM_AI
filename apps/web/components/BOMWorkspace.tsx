@@ -1,14 +1,16 @@
 'use client'
 import Link from 'next/link'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { BOM } from '@/lib/api'
-import { createNode, deleteNode, exportUrl, getBOM, getUserName, setUserName } from '@/lib/api'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { BOM, MappingScan, RiskScan, RiskTag } from '@/lib/api'
+import { createNode, deleteNode, exportUrl, getBOM, getUserName, scanBOMRisks, setUserName } from '@/lib/api'
 import BOMTable from './BOMTable'
 import BOMGraph from './BOMGraph'
 import AgentSidebar from './AgentSidebar'
+import AuthGuard from './AuthGuard'
 import { useAppDialog } from './AppDialog'
 import CompanyPartsPanel from './CompanyPartsPanel'
 import HierarchyRulePanel from './HierarchyRulePanel'
+import PartImportDraftPanel from './PartImportDraftPanel'
 import SelectionConfiguratorModal from './SelectionConfiguratorModal'
 
 const SPLIT_STORAGE_KEY = 'bom.split.topRatio'
@@ -37,6 +39,20 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const selectedNode = selectedId ? bom.nodes.find((n) => n.id === selectedId) || null : null
 
+  // Deep-link support: cross-BOM candidate links land on `/bom/{id}?node=…`.
+  // Pre-select that node on mount so the user lands directly in the right
+  // context. Only fires once per page load — subsequent in-app selection
+  // changes don't touch the URL.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const nid = params.get('node')
+    if (nid && bom.nodes.some((n) => n.id === nid)) {
+      setSelectedId(nid)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Selection configurator modal — opens when user clicks "🛠 选型" on the
   // context card. Workspace owns the open state so it can reload BOM after
   // save (via the existing reload() callback).
@@ -44,7 +60,52 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
   // Agent-triggered "page jumps" are intentionally kept as in-workspace view
   // switches. We do not push a /parts route, so the browser address never
   // exposes the company material-library view.
-  const [mainView, setMainView] = useState<'bom' | 'parts'>('bom')
+  const [mainView, setMainView] = useState<'bom' | 'parts' | 'partDraft'>('bom')
+  const [agentPartsQuery, setAgentPartsQuery] = useState<string | null>(null)
+  const [agentDraftId, setAgentDraftId] = useState<string | null>(null)
+  const [mappingScan, setMappingScan] = useState<MappingScan | null>(null)
+  const mappingCandidateIds = useMemo(() => new Set(
+    (mappingScan?.items || [])
+      .filter((item) => item.suggestions.length > 0)
+      .map((item) => item.node_id),
+  ), [mappingScan])
+
+  // BOM-level risk scan. Refetched whenever the BOM structure reloads (any
+  // edit / mapping change can affect risk rules — e.g. supplier becoming
+  // set, category gained, mapping confirmed). Indexed by node_id for the
+  // table column and graph stroke color to look up cheaply.
+  const [riskScan, setRiskScan] = useState<RiskScan | null>(null)
+  useEffect(() => {
+    const ctrl = new AbortController()
+    scanBOMRisks(bom.id, ctrl.signal)
+      .then(setRiskScan)
+      .catch((ex) => {
+        if (ex?.name !== 'AbortError') {
+          // eslint-disable-next-line no-console
+          console.warn('[BOMWorkspace] scanBOMRisks failed', ex)
+        }
+      })
+    return () => ctrl.abort()
+  }, [bom.id, refreshKey])
+  const risksByNodeId = useMemo(() => {
+    const m = new Map<string, RiskTag[]>()
+    for (const it of riskScan?.items || []) m.set(it.node_id, it.tags)
+    return m
+  }, [riskScan])
+  const riskSeverityByNodeId = useMemo(() => {
+    const m = new Map<string, 'critical' | 'warn' | 'info'>()
+    const rank: Record<string, number> = { critical: 0, warn: 1, info: 2 }
+    for (const it of riskScan?.items || []) {
+      let best: 'critical' | 'warn' | 'info' | null = null
+      for (const t of it.tags) {
+        if (best === null || rank[t.severity] < rank[best]) {
+          best = t.severity as 'critical' | 'warn' | 'info'
+        }
+      }
+      if (best) m.set(it.node_id, best)
+    }
+    return m
+  }, [riskScan])
 
   // Top panel (graph) takes `topRatio` of the .bom-main column; the
   // bottom panel (table) gets the rest. Persisted across reloads.
@@ -241,6 +302,7 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
 
   return (
     <div className="bom-workspace-shell">
+      <AuthGuard />
       <div className="topbar bom-topbar">
         <div className="workspace-brand">
           <Link href="/" className="brand-mark small">
@@ -253,20 +315,6 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
           </span>
         </div>
         <div className="workspace-actions">
-          <button
-            type="button"
-            className={`view-tab ${mainView === 'bom' ? 'active' : ''}`}
-            onClick={() => setMainView('bom')}
-          >
-            BOM 工作台
-          </button>
-          <button
-            type="button"
-            className={`view-tab ${mainView === 'parts' ? 'active' : ''}`}
-            onClick={() => setMainView('parts')}
-          >
-            公司物料库
-          </button>
           <button
             type="button"
             className="workspace-user"
@@ -282,9 +330,29 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
         <div className="bom-main" ref={mainRef} style={mainFlexStyle}>
           {mainView === 'parts' ? (
             <div className="panel" style={{ flex: '1 1 0', minHeight: 0 }}>
-              <div className="panel-header">公司标准物料库</div>
+              <div className="panel-header panel-header-actions">
+                <span>公司标准物料清单</span>
+                <button type="button" className="btn" onClick={() => setMainView('bom')}>
+                  返回 BOM 工作台
+                </button>
+              </div>
               <div className="panel-body">
-                <CompanyPartsPanel refreshKey={refreshKey} />
+                <CompanyPartsPanel
+                  refreshKey={refreshKey}
+                  initialQuery={agentPartsQuery || ''}
+                />
+              </div>
+            </div>
+          ) : mainView === 'partDraft' && agentDraftId ? (
+            <div className="panel" style={{ flex: '1 1 0', minHeight: 0 }}>
+              <div className="panel-header panel-header-actions">
+                <span>标准物料导入草案</span>
+                <button type="button" className="btn" onClick={() => setMainView('bom')}>
+                  返回 BOM 工作台
+                </button>
+              </div>
+              <div className="panel-body">
+                <PartImportDraftPanel draftId={agentDraftId} onConfirmed={reload} />
               </div>
             </div>
           ) : (
@@ -295,6 +363,8 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
                 <div className="panel-body">
                   <BOMGraph
                     nodes={bom.nodes}
+                    mappingCandidateIds={mappingCandidateIds}
+                    riskSeverityByNodeId={riskSeverityByNodeId}
                     selectedId={selectedId}
                     onSelect={setSelectedId}
                     onAddChild={handleGraphAddChild}
@@ -321,6 +391,7 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
                     selectedId={selectedId}
                     onSelect={setSelectedId}
                     exportHref={exportUrl(bom.id)}
+                    risksByNodeId={risksByNodeId}
                   />
                 </div>
               </div>
@@ -344,9 +415,17 @@ export default function BOMWorkspace({ bom: initial }: { bom: BOM }) {
               selectedNode={selectedNode}
               onClearSelection={() => setSelectedId(null)}
               onOpenConfigurator={() => setConfiguratorOpen(true)}
-              onOpenParts={() => setMainView('parts')}
+              onOpenParts={(opts) => {
+                setAgentPartsQuery(opts?.query || null)
+                setMainView('parts')
+              }}
+              onOpenPartDraft={(draftId) => {
+                setAgentDraftId(draftId)
+                setMainView('partDraft')
+              }}
               onOpenBom={() => setMainView('bom')}
-              currentView={mainView}
+              currentView={mainView === 'bom' ? 'bom' : 'parts'}
+              onMappingScan={setMappingScan}
             />
           </div>
         </div>

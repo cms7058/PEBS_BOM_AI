@@ -2,7 +2,7 @@
 import { AgGridReact } from 'ag-grid-react'
 import 'ag-grid-community/styles/ag-grid.css'
 import 'ag-grid-community/styles/ag-theme-quartz.css'
-import type { BOMNode } from '@/lib/api'
+import type { BOMNode, RiskTag } from '@/lib/api'
 import { patchNode } from '@/lib/api'
 import { useEffect, useMemo, useState } from 'react'
 import EditHistoryModal from './EditHistoryModal'
@@ -92,6 +92,7 @@ export default function BOMTable({
   selectedId,
   onSelect,
   exportHref,
+  risksByNodeId,
 }: {
   nodes: BOMNode[]
   bomId?: string
@@ -99,6 +100,7 @@ export default function BOMTable({
   selectedId?: string | null
   onSelect?: (id: string | null) => void
   exportHref?: string
+  risksByNodeId?: Map<string, RiskTag[]>
 }) {
   // Default: expanded, matching the graph's initial full-structure view.
   const [expanded, setExpanded] = useState<Set<string>>(() => getExpandableIds(nodes))
@@ -224,6 +226,43 @@ export default function BOMTable({
     return undefined
   }
 
+  // Severity → display style. Highest-severity tag wins; remaining tags
+  // surface on hover via the title attribute.
+  const RiskCell = (p: any) => {
+    const tags: RiskTag[] = risksByNodeId?.get(p.data?.id) || []
+    if (tags.length === 0) return null
+    const rank: Record<string, number> = { critical: 0, warn: 1, info: 2 }
+    const sorted = [...tags].sort((a, b) => (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9))
+    const top = sorted[0]
+    const palette: Record<string, { bg: string; fg: string; border: string; icon: string }> = {
+      critical: { bg: '#fee2e2', fg: '#b91c1c', border: '#fca5a5', icon: '🚨' },
+      warn: { bg: '#fef3c7', fg: '#92400e', border: '#fcd34d', icon: '⚠️' },
+      info: { bg: '#e0f2fe', fg: '#075985', border: '#7dd3fc', icon: 'ℹ️' },
+    }
+    const s = palette[top.severity] || palette.info
+    const tip = sorted.map((t) => `${t.severity}: ${t.message}`).join('\n')
+    return (
+      <span
+        title={tip}
+        style={{
+          background: s.bg,
+          color: s.fg,
+          border: `1px solid ${s.border}`,
+          borderRadius: 4,
+          padding: '0 6px',
+          fontSize: 11,
+          lineHeight: '18px',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
+        }}
+      >
+        {s.icon} {top.message}
+        {tags.length > 1 && <span style={{ opacity: 0.7 }}>+{tags.length - 1}</span>}
+      </span>
+    )
+  }
+
   const columnDefs = useMemo(
     () => [
       {
@@ -250,10 +289,19 @@ export default function BOMTable({
         width: 90,
         valueFormatter: (p: any) => (p.value != null ? `${Math.round(p.value * 100)}%` : ''),
       },
+      {
+        headerName: '风险',
+        colId: 'risk',
+        width: 220,
+        editable: false,
+        cellRenderer: RiskCell,
+      },
       { field: 'notes', headerName: '备注', flex: 1, minWidth: 160 },
     ],
+    // RiskCell closes over risksByNodeId; recompute when the map changes so
+    // the renderer picks up freshly-fetched tags.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [],
+    [risksByNodeId],
   )
 
   return (
