@@ -2,9 +2,18 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Project root .env lives two levels above apps/api/
-# app/config.py -> app/ -> apps/api -> apps -> <root>
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+def _find_env_root() -> Path:
+    """Find a sensible env root in both native dev and Docker images."""
+    current = Path(__file__).resolve()
+    for directory in current.parents:
+        if (directory / ".env").exists() or (directory / ".env.production").exists():
+            return directory
+        if (directory / "pnpm-workspace.yaml").exists() or (directory / "docker-compose.prod.yml").exists():
+            return directory
+    return Path.cwd()
+
+
+_PROJECT_ROOT = _find_env_root()
 
 
 class Settings(BaseSettings):
