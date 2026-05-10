@@ -29,8 +29,9 @@ export default function LoginForm({ forcedPlan }: { forcedPlan?: string } = {}) 
         : await internalBetaLogin(email, inviteCode)
       router.push(result.user.role === 'super_admin' ? '/admin' : '/')
     } catch (err) {
-      setError(err instanceof Error ? err.message : '登录失败')
-      setShowApplyInvite(err instanceof ApiError && err.action === 'apply_invite')
+      const shouldApplyInvite = err instanceof ApiError && err.action === 'apply_invite'
+      setShowApplyInvite(shouldApplyInvite)
+      setError(shouldApplyInvite ? null : err instanceof Error ? err.message : '登录失败')
     } finally {
       setLoading(false)
     }
@@ -126,17 +127,20 @@ export default function LoginForm({ forcedPlan }: { forcedPlan?: string } = {}) 
               </div>
             </>
           )}
-          {error && <p className="auth-error">{error}</p>}
           {showApplyInvite && (
-            <a
-              className="btn apply-invite-button"
-              href={INVITE_APPLY_URL}
-              rel="noreferrer"
-              target="_blank"
-            >
-              申请邀请码
-            </a>
+            <div className="apply-invite-row">
+              <a
+                className="btn apply-invite-button"
+                href={INVITE_APPLY_URL}
+                rel="noreferrer"
+                target="_blank"
+              >
+                申请邀请码
+              </a>
+              <span>未注册用户</span>
+            </div>
           )}
+          {error && <p className="auth-error">{error}</p>}
           <button className="btn btn-primary auth-submit" disabled={loading} type="submit">
             {loading ? '验证中...' : isAdmin ? '登录后台' : '验证并进入'}
           </button>
