@@ -3,7 +3,9 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { FormEvent, useState } from 'react'
-import { adminLogin, internalBetaLogin } from '@/lib/api'
+import { ApiError, adminLogin, internalBetaLogin } from '@/lib/api'
+
+const INVITE_APPLY_URL = 'https://lingcan.pebs.online/#/pages/copilot/index'
 
 export default function LoginForm({ forcedPlan }: { forcedPlan?: string } = {}) {
   const router = useRouter()
@@ -13,12 +15,14 @@ export default function LoginForm({ forcedPlan }: { forcedPlan?: string } = {}) 
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('admin123456')
   const [error, setError] = useState<string | null>(null)
+  const [showApplyInvite, setShowApplyInvite] = useState(false)
   const [loading, setLoading] = useState(false)
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setLoading(true)
     setError(null)
+    setShowApplyInvite(false)
     try {
       const result = isAdmin
         ? await adminLogin(username, password)
@@ -26,6 +30,7 @@ export default function LoginForm({ forcedPlan }: { forcedPlan?: string } = {}) 
       router.push(result.user.role === 'super_admin' ? '/admin' : '/')
     } catch (err) {
       setError(err instanceof Error ? err.message : '登录失败')
+      setShowApplyInvite(err instanceof ApiError && err.action === 'apply_invite')
     } finally {
       setLoading(false)
     }
@@ -122,6 +127,16 @@ export default function LoginForm({ forcedPlan }: { forcedPlan?: string } = {}) 
             </>
           )}
           {error && <p className="auth-error">{error}</p>}
+          {showApplyInvite && (
+            <a
+              className="btn apply-invite-button"
+              href={INVITE_APPLY_URL}
+              rel="noreferrer"
+              target="_blank"
+            >
+              申请邀请码
+            </a>
+          )}
           <button className="btn btn-primary auth-submit" disabled={loading} type="submit">
             {loading ? '验证中...' : isAdmin ? '登录后台' : '验证并进入'}
           </button>

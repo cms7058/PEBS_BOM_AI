@@ -230,6 +230,18 @@ export interface PaymentOrder {
 const ADMIN_TOKEN_KEY = 'pebs.admin.token'
 const CURRENT_USER_KEY = 'pebs.current.user'
 
+export class ApiError extends Error {
+  action?: string
+  statusCode?: number
+
+  constructor(message: string, action?: string, statusCode?: number) {
+    super(message)
+    this.name = 'ApiError'
+    this.action = action
+    this.statusCode = statusCode
+  }
+}
+
 export function getAdminToken(): string {
   if (typeof window === 'undefined') return ''
   return localStorage.getItem(ADMIN_TOKEN_KEY) || ''
@@ -374,11 +386,19 @@ export async function internalBetaLogin(
     body: JSON.stringify({ email, invite_code: inviteCode }),
   })
   if (!res.ok) {
-    let detail: string | undefined
+    let message: string | undefined
+    let action: string | undefined
     try {
-      detail = (await res.json())?.detail
+      const body = await res.json()
+      const detail = body?.detail
+      if (typeof detail === 'string') {
+        message = detail
+      } else if (detail && typeof detail === 'object') {
+        message = detail.message
+        action = detail.action
+      }
     } catch { /* ignore */ }
-    throw new Error(detail || `internal login failed: ${res.status}`)
+    throw new ApiError(message || `internal login failed: ${res.status}`, action, res.status)
   }
   const data = await res.json()
   setAdminToken(data.token)

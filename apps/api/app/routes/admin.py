@@ -156,6 +156,16 @@ async def _verify_internal_invite(email: str, invite_code: str) -> None:
         data = {}
     ok = data.get("ok", data.get("success", data.get("valid", True)))
     code = data.get("code")
+    invite_status = str(data.get("status") or "active").lower()
+    if invite_status != "active":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "message": data.get("message") or "邀请码尚未激活，请先申请邀请码",
+                "action": "apply_invite",
+                "status": invite_status,
+            },
+        )
     success_codes = {0, 200, "0", "200", "OK", "ok", "SUCCESS", "success"}
     if ok is False or (code is not None and code not in success_codes):
         raise HTTPException(status_code=401, detail=data.get("message") or "邮箱或邀请码验证失败")

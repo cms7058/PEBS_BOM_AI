@@ -1395,6 +1395,14 @@ body.is-resizing-h, body.is-resizing-h * { cursor: col-resize !important; user-s
   background: linear-gradient(135deg, #0aa37f, #18b69f);
 }
 .auth-submit { width: 100%; height: 40px; margin-top: 20px; }
+.apply-invite-button {
+  width: 100%;
+  height: 40px;
+  margin-top: 14px;
+  border: 1px solid rgba(42, 123, 255, 0.28);
+  color: #0d65e8;
+  background: rgba(255, 255, 255, 0.76);
+}
 .auth-error,
 .auth-notice {
   margin: 12px 0 0;
