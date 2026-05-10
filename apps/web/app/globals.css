@@ -1402,6 +1402,12 @@ body.is-resizing-h, body.is-resizing-h * { cursor: col-resize !important; user-s
   font-size: 13px;
 }
 .auth-notice { color: #087b68; }
+.guest-cta-row {
+  margin-top: 28px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
 
 @media (max-width: 980px) {
   .home-hero { grid-template-columns: 1fr; padding: 34px 22px 20px; }

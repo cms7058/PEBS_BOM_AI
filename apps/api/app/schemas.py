@@ -295,6 +295,11 @@ class AppUserOut(BaseModel):
     email: str | None = None
     phone: str | None = None
     status: str
+    trial_expires_at: datetime | None = None
+    bom_import_limit: int | None = None
+    bom_export_limit: int | None = None
+    bom_import_count: int = 0
+    bom_export_count: int = 0
 
     class Config:
         from_attributes = True
@@ -347,6 +352,20 @@ class AdminLoginRequest(BaseModel):
 class AdminLoginOut(BaseModel):
     token: str
     user: AppUserOut
+
+
+class InternalBetaLoginRequest(BaseModel):
+    email: str
+    invite_code: str
+
+
+class UsageStatusOut(BaseModel):
+    ok: bool = True
+    expires_at: datetime | None = None
+    import_limit: int | None = None
+    export_limit: int | None = None
+    import_count: int = 0
+    export_count: int = 0
 
 
 class AppUserPatch(BaseModel):

@@ -5,6 +5,7 @@ import hmac
 import random
 from datetime import datetime, timedelta
 
+import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,7 @@ from app.schemas import (
     EmailCodeOut,
     EmailCodeRequest,
     FeatureFlagPatch,
+    InternalBetaLoginRequest,
     PaymentOrderCreate,
     PaymentOrderOut,
     RegisterRequest,
@@ -126,6 +128,43 @@ def _verify_token(token: str | None, user: AppUser) -> bool:
     if not token:
         return False
     return hmac.compare_digest(token, _token_for(user.username, user.password_hash))
+
+
+def _beta_password_hash(email: str, invite_code: str) -> str:
+    return _hash_password(f"internal:{email.lower()}:{invite_code}")
+
+
+async def _verify_internal_invite(email: str, invite_code: str) -> None:
+    if not settings.internal_beta_verify_url:
+        return
+    payload = {
+        "email": email,
+        "invite_code": invite_code,
+        "inviteCode": invite_code,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=12) as client:
+            res = await client.post(settings.internal_beta_verify_url, json=payload)
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="邀请码验证服务暂时不可用") from exc
+    if res.status_code >= 400:
+        raise HTTPException(status_code=401, detail="邮箱或邀请码验证失败")
+    try:
+        data = res.json()
+    except ValueError:
+        data = {}
+    ok = data.get("ok", data.get("success", data.get("valid", True)))
+    code = data.get("code")
+    success_codes = {0, 200, "0", "200", "OK", "ok", "SUCCESS", "success"}
+    if ok is False or (code is not None and code not in success_codes):
+        raise HTTPException(status_code=401, detail=data.get("message") or "邮箱或邀请码验证失败")
+
+
+def _assert_beta_user_active(user: AppUser) -> None:
+    if user.status != "active":
+        raise HTTPException(status_code=403, detail="账号已停用，请联系管理员")
+    if user.trial_expires_at and user.trial_expires_at < datetime.utcnow():
+        raise HTTPException(status_code=403, detail="内测有效期已结束，请联系管理员")
 
 
 def _plan_price_label(plan: SubscriptionPlan) -> str:
@@ -245,6 +284,35 @@ async def require_super_admin(
     return user
 
 
+async def require_active_user(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    db: AsyncSession = Depends(get_db),
+) -> AppUser:
+    await ensure_admin_defaults(db)
+    token = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+    username = token.split(".")[1] if token.startswith(f"{TOKEN_PREFIX}.") and "." in token else ""
+    user = (
+        await db.execute(select(AppUser).where(AppUser.username == username))
+    ).scalar_one_or_none()
+    if not user or not _verify_token(token, user):
+        raise HTTPException(status_code=401, detail="请先登录内测账号")
+    _assert_beta_user_active(user)
+    return user
+
+
+async def get_user_from_token(token: str, db: AsyncSession) -> AppUser:
+    username = token.split(".")[1] if token.startswith(f"{TOKEN_PREFIX}.") and "." in token else ""
+    user = (
+        await db.execute(select(AppUser).where(AppUser.username == username))
+    ).scalar_one_or_none()
+    if not user or not _verify_token(token, user):
+        raise HTTPException(status_code=401, detail="请先登录内测账号")
+    _assert_beta_user_active(user)
+    return user
+
+
 @router.get("/overview", response_model=AdminOverviewOut)
 async def get_overview(db: AsyncSession = Depends(get_db)) -> AdminOverviewOut:
     return await _overview(db)
@@ -346,6 +414,77 @@ async def login(
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     if not hmac.compare_digest(user.password_hash, _hash_password(body.password)):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
+    return AdminLoginOut(token=_token_for(user.username, user.password_hash), user=user)
+
+
+@router.post("/internal-login", response_model=AdminLoginOut)
+async def internal_beta_login(
+    body: InternalBetaLoginRequest,
+    db: AsyncSession = Depends(get_db),
+) -> AdminLoginOut:
+    await ensure_admin_defaults(db)
+    email = body.email.strip().lower()
+    invite_code = body.invite_code.strip()
+    if "@" not in email or "." not in email:
+        raise HTTPException(status_code=400, detail="请输入有效邮箱")
+    if not invite_code:
+        raise HTTPException(status_code=400, detail="请输入邀请码")
+    await _verify_internal_invite(email, invite_code)
+
+    tenant_id = f"beta_{hashlib.sha1(email.encode('utf-8')).hexdigest()[:16]}"
+    username = f"beta_{hashlib.sha1(email.encode('utf-8')).hexdigest()[:20]}"
+    display_name = email.split("@", 1)[0] or "内测用户"
+    expires_at = datetime.utcnow() + timedelta(days=settings.internal_beta_duration_days)
+    password_hash = _beta_password_hash(email, invite_code)
+
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        tenant = Tenant(
+            id=tenant_id,
+            name=f"{display_name}的内测企业空间",
+            tenant_type="enterprise",
+            subscription_plan_id="enterprise",
+            status="active",
+            owner_name=display_name,
+        )
+        db.add(tenant)
+    else:
+        tenant.tenant_type = "enterprise"
+        tenant.subscription_plan_id = "enterprise"
+        tenant.status = "active"
+        tenant.owner_name = tenant.owner_name or display_name
+
+    user = (
+        await db.execute(select(AppUser).where(AppUser.username == username))
+    ).scalar_one_or_none()
+    if not user:
+        user = AppUser(
+            tenant_id=tenant_id,
+            username=username,
+            display_name=display_name,
+            email=email,
+            role="owner",
+            password_hash=password_hash,
+            status="active",
+            trial_expires_at=expires_at,
+            bom_import_limit=settings.internal_beta_bom_import_limit,
+            bom_export_limit=settings.internal_beta_bom_export_limit,
+            bom_import_count=0,
+            bom_export_count=0,
+        )
+        db.add(user)
+    else:
+        user.tenant_id = tenant_id
+        user.display_name = user.display_name or display_name
+        user.email = email
+        user.role = "owner"
+        user.password_hash = password_hash
+        user.status = "active"
+        user.trial_expires_at = user.trial_expires_at or expires_at
+        user.bom_import_limit = settings.internal_beta_bom_import_limit
+        user.bom_export_limit = settings.internal_beta_bom_export_limit
+    await db.commit()
+    await db.refresh(user)
     return AdminLoginOut(token=_token_for(user.username, user.password_hash), user=user)
 
 

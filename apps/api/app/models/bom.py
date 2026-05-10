@@ -458,6 +458,11 @@ class AppUser(Base):
     phone: Mapped[str | None] = mapped_column(String(64), nullable=True)
     password_hash: Mapped[str] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    trial_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    bom_import_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bom_export_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bom_import_count: Mapped[int] = mapped_column(Integer, default=0)
+    bom_export_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow

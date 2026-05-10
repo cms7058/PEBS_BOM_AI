@@ -6,7 +6,8 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.models.bom import BOM, BOMNode, UploadedFile
+from app.models.bom import AppUser, BOM, BOMNode, UploadedFile
+from app.routes.admin import require_active_user
 from app.schemas import UploadResponse
 from app.services.bom_normalizer import normalize_spreadsheet_to_bom
 from app.services.excel_parser import parse_spreadsheet
@@ -29,7 +30,10 @@ SUPPORTED_CAD = SUPPORTED_STEP | SUPPORTED_IGES
 async def upload_spreadsheet(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
+    user: AppUser = Depends(require_active_user),
 ) -> UploadResponse:
+    if user.bom_import_limit is not None and user.bom_import_count >= user.bom_import_limit:
+        raise HTTPException(403, "内测 BOM 导入次数已用完，请联系管理员")
     if not file.filename:
         raise HTTPException(400, "Missing filename")
     suffix = file.filename.lower().rsplit(".", 1)[-1]
@@ -98,6 +102,7 @@ async def upload_spreadsheet(
         assign_parents(node_objs)
 
     db.add_all(node_objs)
+    user.bom_import_count += 1
     await db.commit()
 
     return UploadResponse(
@@ -112,6 +117,7 @@ async def upload_spreadsheet(
 async def upload_cad(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
+    user: AppUser = Depends(require_active_user),
 ) -> UploadResponse:
     """Parse a CAD file (STEP or IGES) and extract its assembly tree as a BOM.
 
@@ -119,6 +125,8 @@ async def upload_cad(
       - STEP: PRODUCT_DEFINITION + NEXT_ASSEMBLY_USAGE_OCCURRENCE
       - IGES: Subfigure Definition (308) + Subfigure Instance (408)
     """
+    if user.bom_import_limit is not None and user.bom_import_count >= user.bom_import_limit:
+        raise HTTPException(403, "内测 BOM 导入次数已用完，请联系管理员")
     if not file.filename:
         raise HTTPException(400, "Missing filename")
     suffix = file.filename.lower().rsplit(".", 1)[-1]
@@ -228,6 +236,7 @@ async def upload_cad(
             node_objs[i].parent_id = node_objs[pidx].id
 
     db.add_all(node_objs)
+    user.bom_import_count += 1
     await db.commit()
 
     return UploadResponse(

@@ -11,9 +11,16 @@ export default function UserStatusMenu() {
 
   useEffect(() => {
     const user = getCurrentUser()
-    const hasToken = Boolean(getAdminToken())
-    setLoggedIn(hasToken)
-    setLabel(hasToken ? (user?.display_name || user?.username || '已登录') : '未登录')
+    const expiresAt = user?.trial_expires_at ? new Date(user.trial_expires_at).getTime() : 0
+    const hasBetaSession = Boolean(
+      getAdminToken()
+      && user
+      && user.role !== 'super_admin'
+      && expiresAt
+      && expiresAt > Date.now(),
+    )
+    setLoggedIn(hasBetaSession)
+    setLabel(hasBetaSession ? (user?.display_name || user?.username || '已登录') : '未登录')
   }, [])
 
   return (
@@ -43,8 +50,7 @@ export default function UserStatusMenu() {
             </>
           ) : (
             <>
-              <Link href="/login?mode=login">登录</Link>
-              <Link href="/login?mode=register">注册</Link>
+              <Link href="/login">内测登录</Link>
             </>
           )}
         </div>

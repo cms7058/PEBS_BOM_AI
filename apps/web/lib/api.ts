@@ -51,7 +51,11 @@ export async function uploadSpreadsheet(
 ): Promise<{ bom_id: string; name: string; node_count: number }> {
   const fd = new FormData()
   fd.append('file', file)
-  const res = await fetch(`${API_BASE}/upload/spreadsheet`, { method: 'POST', body: fd })
+  const res = await fetch(`${API_BASE}/upload/spreadsheet`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: fd,
+  })
   if (!res.ok) throw new Error(`Upload failed: ${res.status} ${await res.text()}`)
   return res.json()
 }
@@ -61,7 +65,11 @@ export async function uploadCad(
 ): Promise<{ bom_id: string; name: string; node_count: number }> {
   const fd = new FormData()
   fd.append('file', file)
-  const res = await fetch(`${API_BASE}/upload/cad`, { method: 'POST', body: fd })
+  const res = await fetch(`${API_BASE}/upload/cad`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: fd,
+  })
   if (!res.ok) throw new Error(`Upload failed: ${res.status} ${await res.text()}`)
   return res.json()
 }
@@ -183,6 +191,11 @@ export interface AppUser {
   email: string | null
   phone: string | null
   status: string
+  trial_expires_at?: string | null
+  bom_import_limit?: number | null
+  bom_export_limit?: number | null
+  bom_import_count?: number
+  bom_export_count?: number
 }
 
 export interface FeatureFlag {
@@ -252,6 +265,10 @@ export function clearAdminToken(): void {
 function adminHeaders(): Record<string, string> {
   const token = getAdminToken()
   return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
+function authHeaders(): Record<string, string> {
+  return adminHeaders()
 }
 
 export async function getAdminOverview(signal?: AbortSignal): Promise<AdminOverview> {
@@ -340,6 +357,28 @@ export async function adminLogin(
       detail = (await res.json())?.detail
     } catch { /* ignore */ }
     throw new Error(detail || `login failed: ${res.status}`)
+  }
+  const data = await res.json()
+  setAdminToken(data.token)
+  setCurrentUser(data.user)
+  return data
+}
+
+export async function internalBetaLogin(
+  email: string,
+  inviteCode: string,
+): Promise<{ token: string; user: AppUser }> {
+  const res = await fetch(`${API_BASE}/admin/internal-login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, invite_code: inviteCode }),
+  })
+  if (!res.ok) {
+    let detail: string | undefined
+    try {
+      detail = (await res.json())?.detail
+    } catch { /* ignore */ }
+    throw new Error(detail || `internal login failed: ${res.status}`)
   }
   const data = await res.json()
   setAdminToken(data.token)
@@ -817,7 +856,9 @@ export async function classifyNode(
 }
 
 export function exportUrl(bomId: string): string {
-  return `${API_BASE}/export/${bomId}.xlsx`
+  const token = getAdminToken()
+  const suffix = token ? `?auth_token=${encodeURIComponent(token)}` : ''
+  return `${API_BASE}/export/${bomId}.xlsx${suffix}`
 }
 
 const USER_NAME_KEY = 'pebs.user.name'

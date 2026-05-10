@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import AuthGuard from '@/components/AuthGuard'
 import Uploader from '@/components/Uploader'
+import UserStatusMenu from '@/components/UserStatusMenu'
 import { API_BASE } from '@/lib/api'
 
 export const dynamic = 'force-dynamic'
@@ -26,10 +27,7 @@ export default async function HomePage() {
           <span>PEBS BOM</span>
         </div>
         <div className="home-meta">
-          <Link className="admin-link" href="/guest">匿名访问</Link>
-          <Link className="admin-link" href="/admin">后台管理</Link>
-          <span className="user-dot">♙</span>
-          <span>anonymous</span>
+          <UserStatusMenu />
         </div>
       </div>
 
