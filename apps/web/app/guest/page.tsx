@@ -27,7 +27,7 @@ export default function GuestPage({
 
       <section className="home-hero guest-hero">
         <div className="hero-copy">
-          <div className="hero-kicker">✧ PEBS BOM 内测开放</div>
+          <div className="hero-kicker">✧ BOM copilot 内测版开放</div>
           <h1>
             <span>邮箱验证</span>
             <b> · 邀请码准入 · 企业版体验</b>

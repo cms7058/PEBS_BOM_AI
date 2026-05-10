@@ -52,7 +52,7 @@ export default function LoginForm({ forcedPlan }: { forcedPlan?: string } = {}) 
 
       <section className="auth-stage">
         <div className="auth-copy">
-          <div className="hero-kicker">✧ {isAdmin ? '后台管理入口' : 'PEBS BOM 内测'}</div>
+          <div className="hero-kicker">✧ {isAdmin ? '后台管理入口' : 'BOM copilot 内测版'}</div>
           <h1>{isAdmin ? '超级管理员登录' : '邮箱与邀请码登录'}</h1>
           {isAdmin ? (
             <p>超级管理员登录后可继续进入后台管理订阅、用户和功能权限。内测阶段后台保留，不对普通用户展示。</p>
@@ -70,10 +70,6 @@ export default function LoginForm({ forcedPlan }: { forcedPlan?: string } = {}) 
                 <li>
                   <b>内测额度</b>
                   <span>有效期 14 天，最多导入 10 个 BOM、导出 10 个 BOM。</span>
-                </li>
-                <li>
-                  <b>邀请验证</b>
-                  <span>邮箱与邀请码会通过 PEBS 云函数实时校验。</span>
                 </li>
               </ul>
             </div>
