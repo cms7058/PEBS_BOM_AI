@@ -137,9 +137,11 @@ export default function LoginForm({ forcedPlan }: { forcedPlan?: string } = {}) 
             </div>
           )}
           {error && <p className="auth-error">{error}</p>}
-          <button className="btn btn-primary auth-submit" disabled={loading} type="submit">
-            {loading ? '验证中...' : isAdmin ? '登录后台' : '验证并进入'}
-          </button>
+          {!showApplyInvite && (
+            <button className="btn btn-primary auth-submit" disabled={loading} type="submit">
+              {loading ? '验证中...' : isAdmin ? '登录后台' : '验证并进入'}
+            </button>
+          )}
         </form>
       </section>
     </main>
