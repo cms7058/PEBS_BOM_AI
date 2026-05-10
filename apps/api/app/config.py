@@ -76,6 +76,7 @@ class Settings(BaseSettings):
         "https://fc-mp-ad17509f-ebae-4693-974b-769771dd93c5.next.bspapp.com/"
         "pebs-copilot-api"
     )
+    internal_beta_verify_action: str = "checkInvite"
     internal_beta_duration_days: int = 14
     internal_beta_bom_import_limit: int = 10
     internal_beta_bom_export_limit: int = 10

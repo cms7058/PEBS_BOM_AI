@@ -138,6 +138,7 @@ async def _verify_internal_invite(email: str, invite_code: str) -> None:
     if not settings.internal_beta_verify_url:
         return
     payload = {
+        "action": settings.internal_beta_verify_action,
         "productKey": "bom-copilot",
         "email": email,
         "invite_code": invite_code,
@@ -154,6 +155,16 @@ async def _verify_internal_invite(email: str, invite_code: str) -> None:
         data = res.json()
     except ValueError:
         data = {}
+    message = data.get("message") or "邮箱或邀请码验证失败"
+    if message in {"缺少 action", "未知 action"}:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "message": message,
+                "action": "apply_invite",
+                "status": "inactive",
+            },
+        )
     ok = data.get("ok", data.get("success", data.get("valid", True)))
     code = data.get("code")
     invite_status = str(data.get("status") or "active").lower()
@@ -161,14 +172,14 @@ async def _verify_internal_invite(email: str, invite_code: str) -> None:
         raise HTTPException(
             status_code=403,
             detail={
-                "message": data.get("message") or "邀请码尚未激活，请先申请邀请码",
+                "message": message or "邀请码尚未激活，请先申请邀请码",
                 "action": "apply_invite",
                 "status": invite_status,
             },
         )
     success_codes = {0, 200, "0", "200", "OK", "ok", "SUCCESS", "success"}
     if ok is False or (code is not None and code not in success_codes):
-        raise HTTPException(status_code=401, detail=data.get("message") or "邮箱或邀请码验证失败")
+        raise HTTPException(status_code=401, detail=message)
 
 
 def _assert_beta_user_active(user: AppUser) -> None:
