@@ -138,6 +138,7 @@ async def _verify_internal_invite(email: str, invite_code: str) -> None:
     if not settings.internal_beta_verify_url:
         return
     payload = {
+        "action": "loginWithInvite",
         "productKey": "bom-copilot",
         "email": email,
         "inviteCode": invite_code,
