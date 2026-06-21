@@ -510,3 +510,33 @@ class PaymentOrder(Base):
     paid_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     plan: Mapped["SubscriptionPlan | None"] = relationship(lazy="joined")
+
+
+class AmibaConnector(Base):
+    """阿米巴动态智能体接入配置。
+
+    PEBS BOM 作为子工具被接入阿米巴时，阿米巴在「工具接入」页生成连接器令牌，
+    携带 amiba_endpoint / amiba_token / enterprise_id / source 跳到本系统的
+    `/register` 落地页。落地页把这些参数提交给后端落库为一条记录，后端随即回调
+    阿米巴的 `/api/connectors/hello` 完成能力上报（Phase 1）。后续 Phase 2 会用
+    这里保存的 endpoint + token 把 BOM 指标回填到阿米巴对应 OTD 节点。
+    """
+
+    __tablename__ = "amiba_connectors"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    enterprise_id: Mapped[str] = mapped_column(String(64), index=True)
+    source: Mapped[str] = mapped_column(String(32), default="bom")
+    amiba_endpoint: Mapped[str] = mapped_column(String(512))
+    amiba_token: Mapped[str] = mapped_column(String(128))
+    label: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    capabilities: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    connected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_hello_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    hello_ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    hello_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    # Phase 2：指标回填同步状态
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_sync_summary: Mapped[str | None] = mapped_column(String(512), nullable=True)

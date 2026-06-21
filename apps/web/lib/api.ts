@@ -242,6 +242,67 @@ export class ApiError extends Error {
   }
 }
 
+// ---- 阿米巴接入（PEBS BOM 作为子工具）----
+
+export interface AmibaStatus {
+  connected: boolean
+  enterprise_id?: string
+  source?: string
+  amiba_endpoint?: string
+  label?: string | null
+  capabilities?: string[]
+  connected_at?: string | null
+  last_hello_at?: string | null
+  hello_ok?: boolean
+  hello_error?: string | null
+  last_sync_at?: string | null
+  last_sync_summary?: string | null
+}
+
+export interface AmibaSyncResult {
+  ok: boolean
+  bom_acc?: number
+  mapping_rate?: number
+  node_count?: number
+  applied?: number
+  summary?: string
+  error?: string
+}
+
+export interface AmibaConnectInput {
+  amiba_endpoint: string
+  amiba_token: string
+  enterprise_id: string
+  source?: string
+  label?: string
+}
+
+export async function amibaConnect(
+  input: AmibaConnectInput,
+): Promise<AmibaStatus & { ok: boolean }> {
+  const res = await fetch(`${API_BASE}/amiba/connect`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new ApiError(data.detail || '接入失败', undefined, res.status)
+  return data
+}
+
+export async function amibaStatus(): Promise<AmibaStatus> {
+  const res = await fetch(`${API_BASE}/amiba/status`, { cache: 'no-store' })
+  if (!res.ok) throw new ApiError('获取接入状态失败', undefined, res.status)
+  return res.json()
+}
+
+export async function amibaSync(): Promise<AmibaSyncResult> {
+  const res = await fetch(`${API_BASE}/amiba/sync`, { method: 'POST' })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new ApiError(data.detail || '同步失败', undefined, res.status)
+  return data
+}
+
 export function getAdminToken(): string {
   if (typeof window === 'undefined') return ''
   return localStorage.getItem(ADMIN_TOKEN_KEY) || ''

@@ -2,6 +2,7 @@ from app.models.bom import (
     BOM,
     BOMNode,
     BOMNodeEdit,
+    AmibaConnector,
     AppUser,
     Base,
     BrandEntry,
@@ -19,6 +20,7 @@ from app.models.bom import (
 
 __all__ = [
     "Base",
+    "AmibaConnector",
     "AppUser",
     "BOM",
     "BOMNode",

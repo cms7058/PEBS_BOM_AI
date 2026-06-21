@@ -8,7 +8,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.db import engine
 from app.models import Base
-from app.routes import admin, agent, bom, brands, categories, export, hierarchy, parts, upload
+from app.routes import admin, agent, amiba, bom, brands, categories, export, hierarchy, parts, upload
 from app.services.storage import store
 
 
@@ -78,6 +78,15 @@ async def _ensure_dev_sqlite_schema(conn) -> None:
     for name, ddl in plan_columns.items():
         if name not in plan_cols:
             await conn.execute(text(f"ALTER TABLE subscription_plans ADD COLUMN {name} {ddl}"))
+    rows = await conn.execute(text("PRAGMA table_info(amiba_connectors)"))
+    conn_cols = {row[1] for row in rows.fetchall()}
+    if conn_cols:  # 表已存在（旧版无同步列）才补列；不存在时 create_all 会建全
+        for name, ddl in {
+            "last_sync_at": "DATETIME",
+            "last_sync_summary": "VARCHAR(512)",
+        }.items():
+            if name not in conn_cols:
+                await conn.execute(text(f"ALTER TABLE amiba_connectors ADD COLUMN {name} {ddl}"))
 
 
 @asynccontextmanager
@@ -112,6 +121,7 @@ app.include_router(brands.router)
 app.include_router(categories.router)
 app.include_router(parts.router)
 app.include_router(admin.router)
+app.include_router(amiba.router)
 
 
 @app.get("/health")
