@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
-import { amibaConnect, amibaStatus, amibaSync, type AmibaStatus } from '@/lib/api'
+import { amibaConnect, amibaStatus, amibaSync, API_BASE, setAdminToken, setCurrentUser, setUserName, type AmibaStatus } from '@/lib/api'
 
 export const dynamic = 'force-dynamic'
 
@@ -95,6 +95,31 @@ export default function RegisterPage() {
   useEffect(() => {
     const p = readParams()
     setParams(p)
+
+    // 若携带平台登录参数，建立 BOM 端会话，使「进入 BOM 工作台」不再被踢回登录
+    const q = new URLSearchParams(window.location.search)
+    const platformToken = q.get('platform_token')
+    const username = q.get('username')
+    if (platformToken && username && p.amiba_endpoint) {
+      fetch(`${API_BASE}/amiba/platform-login`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amiba_endpoint: p.amiba_endpoint, username, platform_token: platformToken, tool: p.source }),
+      })
+        .then((r) => r.json())
+        .then((ld) => {
+          if (!ld.ok) return
+          setAdminToken(ld.session_token)
+          setUserName(ld.display_name || username)
+          setCurrentUser({
+            id: ld.userId || username, tenant_id: 'default', username,
+            display_name: ld.display_name || username, role: 'amiba',
+            email: username.includes('@') ? username : null, phone: null, status: 'active',
+            trial_expires_at: new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString(),
+          })
+        })
+        .catch(() => {})
+    }
+
     if (!p.amiba_endpoint || !p.amiba_token || !p.enterprise_id) {
       setPhase('missing')
       // 仍尝试读取已有接入状态（可能是直接进来查看的）

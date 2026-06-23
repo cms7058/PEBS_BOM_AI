@@ -540,3 +540,64 @@ class AmibaConnector(Base):
     # Phase 2：指标回填同步状态
     last_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_sync_summary: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+
+class AmibaPlatformSession(Base):
+    """阿米巴平台登录会话：用户用 阿米巴用户名 + 平台令牌 登入 BOM 后建立。
+
+    与邮箱+验证码登录并存；平台登录的会话进入「amiba 模式」（产品驱动 + 多人多线程
+    + 工时回传），普通登录默认单人单线程。
+    """
+
+    __tablename__ = "amiba_platform_sessions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    session_token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    username: Mapped[str] = mapped_column(String(128), index=True)
+    display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    amiba_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    amiba_endpoint: Mapped[str] = mapped_column(String(512))
+    tool: Mapped[str] = mapped_column(String(32), default="bom")
+    paid_plan: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+
+
+class BomProject(Base):
+    """按阿米巴产品建立的 BOM 编制项目：建项目即开始计时，提交时汇总工时回传。"""
+
+    __tablename__ = "bom_projects"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    tenant_id: Mapped[str] = mapped_column(String(64), default="default", index=True)
+    mode: Mapped[str] = mapped_column(String(16), default="amiba")  # amiba | standalone
+    bom_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)  # 关联实际 BOM 编制记录
+    enterprise_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    enterprise_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    amiba_product_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    part_no: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    product_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    amiba_endpoint: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    connector_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_by_username: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    labor_rate: Mapped[float] = mapped_column(Float, default=80.0)  # 元/人·小时，工价换算
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active | submitted
+
+
+class BomTask(Base):
+    """多人多线程编制的任务：按 BOM 范围分给团队成员，各自独立计时。"""
+
+    __tablename__ = "bom_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(String(36), ForeignKey("bom_projects.id"), index=True)
+    assignee_username: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    assignee_display: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    scope: Mapped[str] = mapped_column(String(256), default="BOM 编制")
+    status: Mapped[str] = mapped_column(String(16), default="todo")  # todo | doing | done
+    active_seconds: Mapped[int] = mapped_column(Integer, default=0)
+    running_since: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

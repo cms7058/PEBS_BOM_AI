@@ -1,4 +1,5 @@
 import BOMWorkspace from '@/components/BOMWorkspace'
+import AmibaProjectBanner from '@/components/AmibaProjectBanner'
 import { API_BASE } from '@/lib/api'
 import type { BOM } from '@/lib/api'
 
@@ -23,5 +24,12 @@ export default async function BOMPage({ params }: { params: { id: string } }) {
       </div>
     )
   }
-  return <BOMWorkspace bom={bom} />
+  return (
+    <>
+      <div style={{ padding: '12px 16px 0' }}>
+        <AmibaProjectBanner bomId={params.id} />
+      </div>
+      <BOMWorkspace bom={bom} />
+    </>
+  )
 }
