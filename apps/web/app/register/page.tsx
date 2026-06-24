@@ -96,17 +96,20 @@ export default function RegisterPage() {
     const p = readParams()
     setParams(p)
 
-    // 若携带平台登录参数，建立 BOM 端会话，使「进入 BOM 工作台」不再被踢回登录
+    // 若携带平台登录参数，建立 BOM 端会话；若同时带了产品，则按产品建 BOM 项目并
+    // 直接进入编制页（与 /amiba/launch 一致，使「接入时选产品」与其它工具统一）。
     const q = new URLSearchParams(window.location.search)
     const platformToken = q.get('platform_token')
     const username = q.get('username')
+    const productId = q.get('product_id')
     if (platformToken && username && p.amiba_endpoint) {
-      fetch(`${API_BASE}/amiba/platform-login`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amiba_endpoint: p.amiba_endpoint, username, platform_token: platformToken, tool: p.source }),
-      })
-        .then((r) => r.json())
-        .then((ld) => {
+      ;(async () => {
+        try {
+          const login = await fetch(`${API_BASE}/amiba/platform-login`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ amiba_endpoint: p.amiba_endpoint, username, platform_token: platformToken, tool: p.source }),
+          })
+          const ld = await login.json()
           if (!ld.ok) return
           setAdminToken(ld.session_token)
           setUserName(ld.display_name || username)
@@ -116,8 +119,25 @@ export default function RegisterPage() {
             email: username.includes('@') ? username : null, phone: null, status: 'active',
             trial_expires_at: new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString(),
           })
-        })
-        .catch(() => {})
+          // 带产品：按产品建/复用 BOM 项目，直接进编制页
+          if (productId) {
+            let team: { username: string; displayName?: string }[] = []
+            try { team = JSON.parse(q.get('team') || '[]') } catch {}
+            const proj = await fetch(`${API_BASE}/amiba/projects`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                enterprise_id: p.enterprise_id, enterprise_name: q.get('enterprise_name'),
+                product_id: productId, part_no: q.get('part_no'), product_name: q.get('product_name'),
+                amiba_endpoint: p.amiba_endpoint, connector_token: p.amiba_token,
+                created_by_username: username, team,
+              }),
+            })
+            const pd = await proj.json()
+            if (pd.bom_id) window.location.assign(`/bom/${pd.bom_id}`)
+            else if (pd.id) window.location.assign(`/amiba/project/${pd.id}`)
+          }
+        } catch { /* ignore */ }
+      })()
     }
 
     if (!p.amiba_endpoint || !p.amiba_token || !p.enterprise_id) {
