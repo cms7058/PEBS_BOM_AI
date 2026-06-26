@@ -99,7 +99,31 @@ DB_AUTO_CREATE=false
 
 因此不会依赖应用启动时 `create_all` 自动建表。
 
-## 6. 当前已验证
+## 6. 升级 / 重新部署（改代码后）
+
+服务器拉取最新代码并重建对应服务。**api 容器启动会自动跑 `alembic upgrade head`**，所以新增迁移（如新表）只需重建 api 即可生效。
+
+```bash
+cd /opt/pebs-bom
+git pull
+docker compose --env-file .env.production -f docker-compose.prod.yml build --no-cache api
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d api
+```
+
+说明与注意：
+
+- **必须带 `--env-file .env.production`**：`docker-compose.prod.yml` 里 `MINIO_ROOT_USER`、`NEXT_PUBLIC_API_BASE` 等是必填变量，省略会报 `required variable ... is missing`。
+- **只改了前端就重建 `web`**，只改了后端/迁移就重建 `api`，两端都改则两个都重建（把上面的 `api` 换成 `web`，或分别执行）。`postgres / redis / minio` 不要动，数据在 volume 里。
+- `NEXT_PUBLIC_*` 是**构建期**烤进前端包的，改了这类变量必须重建 `web` 才生效。
+- 验证：
+  ```bash
+  docker exec pebs-bom-api-1 alembic -c alembic.ini current   # 应为最新 revision (head)
+  docker exec pebs-bom-postgres-1 sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt"'
+  ```
+
+> 端口约定：生产用 `docker-compose.prod.yml`，web→`3100`、api→`8100`（避开同机阿米巴/PEBS 占用的 3000/8000）。
+
+## 7. 当前已验证
 
 在本机已完成：
 
@@ -117,7 +141,7 @@ docker compose --env-file .env.production -f docker-compose.prod.yml build
 
 这一步需要在装有 Docker 的云服务器或本地 Docker 环境执行。
 
-## 7. 上线后的安全动作
+## 8. 上线后的安全动作
 
 1. 首次登录后立刻修改超级管理员默认密码。
 2. 不要把 `.env.production` 提交到 git。
